@@ -2,7 +2,7 @@
 import streamlit as st
 st.set_page_config(page_title="LBS Bina Competitor Dashboard", layout="wide")
 
-from pages import stock_monitoring, financials, balance_sheet, cash_flow, overview
+import stock_monitoring, financials, balance_sheet, cash_flow, overview
 
 tabs = st.tabs(["Overview","Stock Monitoring", "Financials", "Balance Sheet","Cash Flow"])
 
@@ -16,4 +16,5 @@ with tabs[3]:
     balance_sheet.main()
 with tabs[4]:
     cash_flow.main()
+
 
