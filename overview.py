@@ -4,7 +4,7 @@ import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import date
-from .financials import get_revenue_data, get_patmi_data  # <-- make sure you implemented these
+from financials import get_revenue_data, get_patmi_data  # <-- make sure you implemented these
 
 
 # --- Fetch Stock Data ---
@@ -109,3 +109,4 @@ def main():
             # sales_df = pd.read_csv("sales_targets.csv")  # Columns: Company, Target, Actual
             # fig_sales = px.bar(sales_df, x="Company", y=["Target", "Actual"], barmode="group")
             # st.plotly_chart(fig_sales, use_container_width=True)
+
