@@ -290,5 +290,4 @@ def main():
         # st.plotly_chart(fig_sales, use_container_width=True)
 
 
-if __name__ == "__main__":
-    main()
+
