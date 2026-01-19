@@ -4,7 +4,7 @@ st.set_page_config(page_title="LBS Bina Competitor Dashboard", layout="wide")
 
 import stock_monitoring, financials, balance_sheet, cash_flow, overview
 
-tabs = st.tabs(["Overview","Stock Monitoring", "Financials", "Balance Sheet","Cash Flow"])
+tabs = st.tabs(["Overview","Stock Monitoring", "Income Statement", "Balance Sheet","Cash Flow"])
 
 with tabs[0]:
     overview.main()
@@ -16,5 +16,6 @@ with tabs[3]:
     balance_sheet.main()
 with tabs[4]:
     cash_flow.main()
+
 
 
