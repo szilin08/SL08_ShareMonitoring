@@ -91,9 +91,18 @@ def main():
     st.divider()
 
     # -----------------------
-    # 1) SIDE-BY-SIDE BAR CHART (NO LINE)
+    # 1) SIDE-BY-SIDE BAR CHART (ORDERED BY LATEST YEAR, ASC)
     # -----------------------
-    st.subheader("📊 ESG Stars by Year (Side-by-Side)")
+    latest_year = dsel["Year"].max()
+
+    st.subheader(f"📊 ESG Stars by Year (Ordered by {latest_year})")
+
+    # Order companies by latest year ESG stars (ascending)
+    order_df = (
+        dsel[dsel["Year"] == latest_year]
+        .sort_values("ESG_Stars", ascending=True)
+    )
+    company_order = order_df["Label"].tolist()
 
     bar_fig = px.bar(
         dsel,
@@ -101,7 +110,8 @@ def main():
         y="ESG_Stars",
         color="Year",
         barmode="group",
-        title="ESG Stars Comparison Across Years",
+        category_orders={"Label": company_order},
+        title=f"ESG Stars Comparison Across Years (Ordered by {latest_year})",
     )
     bar_fig.update_layout(
         xaxis_title="",
@@ -115,7 +125,6 @@ def main():
     # -----------------------
     st.subheader("🔁 ESG Stars YoY Movement")
 
-    latest_year = dsel["Year"].max()
     prev_year = latest_year - 1
 
     latest = dsel[dsel["Year"] == latest_year][
@@ -157,6 +166,7 @@ def main():
         "Source: FTSE Russell ESG Ratings via Bursa Malaysia (Main Market). "
         "YoY comparison is based on latest available year vs previous year."
     )
+
 
 
 
