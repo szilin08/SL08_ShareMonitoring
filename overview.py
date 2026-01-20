@@ -212,5 +212,5 @@ def main():
             st.warning("Pick two points on the same company line for a clean variance.")
 
 
-if __name__ == "__main__":
-    main()
+
+
