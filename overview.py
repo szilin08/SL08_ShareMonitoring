@@ -95,44 +95,74 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
         return
 
     df_all = df_all.copy()
+
+    # Hard clean
+    df_all["Date"] = pd.to_datetime(df_all["Date"], errors="coerce")
+    df_all["Close"] = pd.to_numeric(df_all["Close"], errors="coerce")
     df_all = df_all.dropna(subset=["Date", "Close", "Company"])
 
-    # Stable company ordering to avoid curveNumber mismatch across reruns
+    # Stable ordering
     company_order = sorted(df_all["Company"].unique().tolist())
     df_all["Company"] = pd.Categorical(df_all["Company"], categories=company_order, ordered=True)
-
     df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
 
-    # Session storage for point picks
+    # Session picks
     if "picked_points_close" not in st.session_state:
         st.session_state.picked_points_close = []
 
-    # Axis range padding
+    # Axis range + sane ticks
     y_min = float(df_all["Close"].min())
     y_max = float(df_all["Close"].max())
     pad = max((y_max - y_min) * 0.10, 0.01)
+    y0, y1 = y_min - pad, y_max + pad
 
-    # Plot
-    fig = px.line(
-        df_all,
-        x="Date",
-        y="Close",
-        color="Company",
-        title="Closing Price Over Time",
-    )
-    fig.update_traces(mode="lines")
+    # Choose tick step (keeps chart readable)
+    span = y1 - y0
+    if span <= 0.10:
+        dtick = 0.01
+    elif span <= 0.50:
+        dtick = 0.05
+    else:
+        dtick = 0.10
+
+    # ---- Build figure (NO px.line) ----
+    fig = go.Figure()
+
+    for comp in company_order:
+        d = df_all[df_all["Company"] == comp]
+        fig.add_trace(
+            go.Scatter(
+                x=d["Date"],
+                y=d["Close"],
+                mode="lines",
+                name=comp,
+                customdata=[[comp]] * len(d),  # for click mapping
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Date: %{x|%Y-%m-%d}<br>"
+                    "Close: %{y:.4f}<extra></extra>"
+                ),
+            )
+        )
+
     fig.update_layout(
-        hovermode="x unified",
+        title="Closing Price Over Time",
         height=520,
         margin=dict(l=10, r=10, t=60, b=10),
+        hovermode="x unified",
         legend_title_text="Company",
     )
-    fig.update_xaxes(title_text="Date")
+
+    # FORCE y-axis to show decimals correctly (no more 2/4/6/8 nonsense)
     fig.update_yaxes(
         title_text="Close (RM)",
-        tickformat=".4f",  # ✅ show decimals properly
-        range=[y_min - pad, y_max + pad],
+        range=[y0, y1],
+        tickmode="linear",
+        dtick=dtick,
+        tickformat=".4f",
     )
+
+    fig.update_xaxes(title_text="Date")
 
     # Click events
     clicked = plotly_events(
@@ -150,21 +180,19 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
         curve = c.get("curveNumber")
         point_index = c.get("pointIndex")
 
-        if curve is not None and point_index is not None:
-            companies_in_plot = company_order  # stable
-            if 0 <= curve < len(companies_in_plot):
-                company = companies_in_plot[curve]
+        if curve is not None and point_index is not None and 0 <= curve < len(company_order):
+            company = company_order[curve]
+            df_comp = df_all[df_all["Company"] == company].reset_index(drop=True)
 
-                df_comp = df_all[df_all["Company"] == company].reset_index(drop=True)
-                if 0 <= point_index < len(df_comp):
-                    row = df_comp.loc[point_index]
-                    picked = {
-                        "Company": company,
-                        "Date": pd.to_datetime(row["Date"]),
-                        "Close": float(row["Close"]),
-                    }
-                    st.session_state.picked_points_close.append(picked)
-                    st.session_state.picked_points_close = st.session_state.picked_points_close[-2:]
+            if 0 <= point_index < len(df_comp):
+                row = df_comp.loc[point_index]
+                picked = {
+                    "Company": company,
+                    "Date": pd.to_datetime(row["Date"]),
+                    "Close": float(row["Close"]),
+                }
+                st.session_state.picked_points_close.append(picked)
+                st.session_state.picked_points_close = st.session_state.picked_points_close[-2:]
 
     # UI display
     col1, col2, col3 = st.columns([1.2, 1.2, 0.7])
@@ -207,6 +235,7 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
 
         if p1["Company"] != p2["Company"]:
             st.warning("You clicked two different companies. If you want a clean move, click 2 points on the same line.")
+
 
 
 # -------------------------
@@ -354,4 +383,5 @@ def main():
         st.info("This requires additional data (annual reports / sales target dataset).")
     else:
         st.caption("Select companies + dates, then click **Generate Overview**.")
+
 
