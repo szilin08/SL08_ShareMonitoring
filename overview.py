@@ -39,8 +39,7 @@ def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
     df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
     df = df.dropna(subset=["Date", "Close"]).copy()
 
-    # ✅ Fix Yahoo KL scaling (this is your axis problem)
-    # If max close is hundreds/thousands, it’s sen*1000.
+    # ✅ Fix Yahoo KL scaling (axis issue)
     mx = float(df["Close"].max())
     if mx > 50:        # e.g. 265, 759, 1400
         df["Close"] = df["Close"] / 1000.0
@@ -51,15 +50,13 @@ def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
 
 
 def ticker_for(company: str) -> str:
-    if company == BASE["name"]:
-        return BASE["ticker"]
-    return COMPETITORS[company]
+    return BASE["ticker"] if company == BASE["name"] else COMPETITORS[company]
 
 
 def main():
     st.title("📊 Overview Dashboard")
 
-    # state (so clicks don’t reset)
+    # --- state so clicks don’t reset everything ---
     if "df_all" not in st.session_state:
         st.session_state.df_all = pd.DataFrame()
     if "generated" not in st.session_state:
@@ -67,18 +64,26 @@ def main():
     if "picks" not in st.session_state:
         st.session_state.picks = []
 
-    start_dt = st.date_input("Start date", value=date(2020, 1, 1))
-    end_dt = st.date_input("End date", value=date.today())
+    # Inputs
+    start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="overview_start")
+    end_dt = st.date_input("End date", value=date.today(), key="overview_end")
+    selected = st.multiselect("Select companies", options=ALL, default=[BASE["name"]], key="overview_companies")
 
-    selected = st.multiselect("Select companies", options=ALL, default=[BASE["name"]])
-
+    # Fetch button
     if st.button("Generate Overview", type="primary"):
         if not selected:
             st.warning("Pick at least one company.")
-            return
+            st.session_state.generated = False
+            st.session_state.df_all = pd.DataFrame()
+            st.session_state.picks = []
+            st.stop()
+
         if start_dt >= end_dt:
             st.warning("Start date must be earlier than end date.")
-            return
+            st.session_state.generated = False
+            st.session_state.df_all = pd.DataFrame()
+            st.session_state.picks = []
+            st.stop()
 
         dfs = []
         with st.spinner("Fetching..."):
@@ -91,16 +96,24 @@ def main():
 
         if not dfs:
             st.warning("No data returned for that range.")
-            return
+            st.session_state.generated = False
+            st.session_state.df_all = pd.DataFrame()
+            st.session_state.picks = []
+            st.stop()
 
+        # EXACTLY like your old approach: concat + reset_index
         df_all = pd.concat(dfs, ignore_index=True)
-        order = sorted(df_all["Company"].unique().tolist())
-        df_all["Company"] = pd.Categorical(df_all["Company"], categories=order, ordered=True)
+        # stable order for click mapping
+        company_order = [BASE["name"]] + [c for c in selected if c != BASE["name"]]
+        leftovers = [c for c in df_all["Company"].unique() if c not in company_order]
+        company_order += sorted(leftovers)
+
+        df_all["Company"] = pd.Categorical(df_all["Company"], categories=company_order, ordered=True)
         df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
 
         st.session_state.df_all = df_all
         st.session_state.generated = True
-        st.session_state.picks = []
+        st.session_state.picks = []  # reset picks each time you fetch
         st.rerun()
 
     if not st.session_state.generated or st.session_state.df_all.empty:
@@ -109,79 +122,113 @@ def main():
 
     df_all = st.session_state.df_all.copy()
 
-    st.subheader("Closing Price Comparison")
+    # --- Side by Side Charts (like your old code) ---
+    col1, col2 = st.columns(2)
 
-    fig = px.line(df_all, x="Date", y="Close", color="Company", title="Closing Price")
-    fig.update_traces(mode="lines", line=dict(width=2))
-    fig.update_layout(
-        template="plotly_dark",
-        hovermode="x unified",
-        height=520,
-        margin=dict(l=10, r=10, t=50, b=10),
-        paper_bgcolor="#0b0f14",
-        plot_bgcolor="#0b0f14",
-        legend_title_text="Company",
-    )
-    fig.update_xaxes(title_text="Date", gridcolor="rgba(255,255,255,0.08)", zeroline=False)
-    fig.update_yaxes(title_text="Close (RM)", tickformat=".4f", gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    with col1:
+        st.subheader("Closing Price Comparison")
 
-    clicked = plotly_events(fig, click_event=True, select_event=False, hover_event=False,
-                            key="close_clicks", override_height=520)
+        # SAME as your fig_close block (keep it)
+        fig_close = px.line(
+            df_all,
+            x="Date",
+            y="Close",
+            color="Company",
+            title="Closing Price",
+            width=800,
+            height=500,
+        )
 
-    if clicked:
-        c = clicked[0]
-        curve = c.get("curveNumber")
-        point_index = c.get("pointIndex")
-        companies = list(df_all["Company"].cat.categories)
+        # Make it dark like you want (optional but matches your reference)
+        fig_close.update_traces(mode="lines", line=dict(width=2))
+        fig_close.update_layout(
+            template="plotly_dark",
+            hovermode="x unified",
+            paper_bgcolor="#0b0f14",
+            plot_bgcolor="#0b0f14",
+            margin=dict(l=10, r=10, t=50, b=10),
+        )
+        fig_close.update_xaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+        fig_close.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, tickformat=".4f")
 
-        if curve is not None and point_index is not None and 0 <= curve < len(companies):
-            comp = companies[curve]
-            df_comp = df_all[df_all["Company"] == comp].reset_index(drop=True)
+        # IMPORTANT: use plotly_events instead of st.plotly_chart so clicks work
+        clicked = plotly_events(
+            fig_close,
+            click_event=True,
+            select_event=False,
+            hover_event=False,
+            key="close_clicks",
+            override_height=500,
+        )
 
-            if 0 <= point_index < len(df_comp):
-                row = df_comp.loc[point_index]
-                st.session_state.picks.append({
-                    "Company": comp,
-                    "Date": pd.to_datetime(row["Date"]),
-                    "Close": float(row["Close"]),
-                })
-                st.session_state.picks = st.session_state.picks[-2:]
+        # Store picks
+        if clicked:
+            c = clicked[0]
+            curve = c.get("curveNumber")
+            point_index = c.get("pointIndex")
 
-    picks = st.session_state.picks
-    c1, c2, c3 = st.columns([1.2, 1.2, 0.7])
+            companies = list(df_all["Company"].cat.categories)
 
-    with c1:
-        st.write("**Pick #1**")
-        if len(picks) >= 1:
-            p1 = picks[0]
-            st.caption(p1["Company"])
-            st.write(f"{p1['Date'].date()} • **{p1['Close']:.4f}**")
-        else:
-            st.caption("Click a point")
+            if curve is not None and point_index is not None and 0 <= curve < len(companies):
+                company = companies[curve]
+                df_comp = df_all[df_all["Company"] == company].reset_index(drop=True)
 
-    with c2:
-        st.write("**Pick #2**")
-        if len(picks) >= 2:
-            p2 = picks[1]
-            st.caption(p2["Company"])
-            st.write(f"{p2['Date'].date()} • **{p2['Close']:.4f}**")
-        else:
-            st.caption("Click second point")
+                if 0 <= point_index < len(df_comp):
+                    row = df_comp.loc[point_index]
+                    st.session_state.picks.append(
+                        {
+                            "Company": company,
+                            "Date": pd.to_datetime(row["Date"]),
+                            "Close": float(row["Close"]),
+                        }
+                    )
+                    st.session_state.picks = st.session_state.picks[-2:]
 
-    with c3:
-        if st.button("Reset picks"):
-            st.session_state.picks = []
-            st.rerun()
+        # Picks UI under chart
+        picks = st.session_state.picks
+        p1c, p2c, rc = st.columns([1.2, 1.2, 0.7])
 
-    if len(picks) == 2:
-        p1, p2 = picks
-        diff = p2["Close"] - p1["Close"]
-        pct = (diff / p1["Close"]) * 100 if p1["Close"] else 0.0
-        days = int((p2["Date"] - p1["Date"]).days)
+        with p1c:
+            st.write("**Pick #1**")
+            if len(picks) >= 1:
+                p1 = picks[0]
+                st.caption(p1["Company"])
+                st.write(f"{p1['Date'].date()} • **{p1['Close']:.4f}**")
+            else:
+                st.caption("Click a point")
 
-        st.markdown("### Difference")
-        st.write(f"**Δ Close:** {diff:+.4f}")
-        st.write(f"**% Change:** {pct:+.2f}%")
-        st.write(f"**Days between:** {days} day(s)")
+        with p2c:
+            st.write("**Pick #2**")
+            if len(picks) >= 2:
+                p2 = picks[1]
+                st.caption(p2["Company"])
+                st.write(f"{p2['Date'].date()} • **{p2['Close']:.4f}**")
+            else:
+                st.caption("Click a second point")
+
+        with rc:
+            if st.button("Reset picks", key="reset_picks"):
+                st.session_state.picks = []
+                st.rerun()
+
+        # Variance
+        if len(picks) == 2:
+            p1, p2 = picks
+            diff = p2["Close"] - p1["Close"]
+            pct = (diff / p1["Close"]) * 100 if p1["Close"] else 0.0
+            days = int((p2["Date"] - p1["Date"]).days)
+
+            st.markdown("### Difference")
+            st.write(f"**Δ Close:** {diff:+.4f}")
+            st.write(f"**% Change:** {pct:+.2f}%")
+            st.write(f"**Days between:** {days} day(s)")
+
+            if p1["Company"] != p2["Company"]:
+                st.warning("Click 2 points on the same company line if you want a clean variance.")
+
+    with col2:
+        # keep empty / placeholder (so layout matches your old side-by-side)
+        st.subheader(" ")
+        st.caption("Add Volume / other chart here if you want.")
 
 
