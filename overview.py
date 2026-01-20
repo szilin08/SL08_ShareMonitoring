@@ -296,3 +296,7 @@ else:
     st.info("Select companies and date range, then click **Generate Overview** to load the chart.")
 
 st.caption("Data from Yahoo Finance • Prices in MYR • Not investment advice")
+
+
+if __name__ == "__main__":
+    main()
