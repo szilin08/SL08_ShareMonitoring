@@ -65,90 +65,98 @@ def compute_3y_change(df: pd.DataFrame) -> pd.DataFrame:
     return wide
 
 def main():
-    st.title("🌿 ESG Dashboard (FTSE Russell via Bursa PDFs)")
+    st.title("🌿 ESG Comparison (FTSE Russell via Bursa PDFs)")
 
     df = load_esg_table()
     if df.empty:
-        st.error("CSV is empty or not found. Make sure ftse_esg_selected_companies_3y.csv exists.")
+        st.error("CSV is empty or not found.")
         return
 
+    # -----------------------
+    # Company selection
+    # -----------------------
     all_labels = sorted(df["Label"].unique().tolist())
-
-    # Defaults
-    default_base = "LBS Bina (5789)" if "LBS Bina (5789)" in all_labels else all_labels[0]
-
-    base = st.selectbox("Base developer", all_labels, index=all_labels.index(default_base))
-    others = [x for x in all_labels if x != base]
-
-    compare = st.multiselect(
-        "Compare against",
-        others,
-        default=others[:3] if len(others) >= 3 else others,
+    selected = st.multiselect(
+        "Select developers to compare",
+        all_labels,
+        default=all_labels,
     )
 
-    selected = [base] + compare
+    if not selected:
+        st.warning("Select at least one developer.")
+        return
+
     dsel = df[df["Label"].isin(selected)].copy()
 
     st.divider()
 
     # -----------------------
-    # 1) Trend line (2023–2025)
+    # 1) SIDE-BY-SIDE BAR CHART (NO LINE)
     # -----------------------
-    st.subheader("📈 ESG Stars Trend (by year)")
-    line_fig = px.line(
-        dsel.sort_values("Year"),
-        x="Year",
-        y="ESG_Stars",
-        color="Label",
-        markers=True,
-        title="ESG Stars over time",
-    )
-    line_fig.update_layout(xaxis_title="Year", yaxis_title="ESG Stars")
-    st.plotly_chart(line_fig, use_container_width=True)
+    st.subheader("📊 ESG Stars by Year (Side-by-Side)")
 
-    # -----------------------
-    # 2) Latest year comparison (bar)
-    # -----------------------
-    latest_year = int(dsel["Year"].max())
-    st.subheader(f"📊 ESG Stars Comparison ({latest_year})")
-    latest = dsel[dsel["Year"] == latest_year].copy()
-
-    bar_latest = px.bar(
-        latest.sort_values("ESG_Stars", ascending=False),
+    bar_fig = px.bar(
+        dsel,
         x="Label",
         y="ESG_Stars",
-        title=f"Latest ESG Stars ({latest_year})",
+        color="Year",
+        barmode="group",
+        title="ESG Stars Comparison Across Years",
     )
-    bar_latest.update_layout(xaxis_title="", yaxis_title="ESG Stars")
-    st.plotly_chart(bar_latest, use_container_width=True)
+    bar_fig.update_layout(
+        xaxis_title="",
+        yaxis_title="ESG Stars",
+        legend_title="Year",
+    )
+    st.plotly_chart(bar_fig, use_container_width=True)
 
     # -----------------------
-    # 3) 3-year change comparison (bar)
+    # 2) YoY MOVEMENT TABLES
     # -----------------------
-    st.subheader("🔁 ESG Change (First year → Last year)")
-    wide = compute_3y_change(dsel)
+    st.subheader("🔁 ESG Stars YoY Movement")
 
-    if wide.empty:
-        st.info("Not enough year data to compute change.")
-    else:
-        wide["Label"] = wide["Company"] + " (" + wide["StockCode"] + ")"
-        change_fig = px.bar(
-            wide.sort_values("Change_3Y", ascending=False),
-            x="Label",
-            y="Change_3Y",
-            title=f"ESG Change ({int(wide['FirstYear'].iloc[0])} → {int(wide['LastYear'].iloc[0])})",
-        )
-        change_fig.update_layout(xaxis_title="", yaxis_title="Star change")
-        st.plotly_chart(change_fig, use_container_width=True)
+    latest_year = dsel["Year"].max()
+    prev_year = latest_year - 1
 
-    # -----------------------
-    # Table
-    # -----------------------
-    st.subheader("🧾 Data Table")
-    show_cols = ["Year", "StockCode", "Company", "ESG_Stars", "FTSE4Good_Index", "FTSE4Good_Shariah"]
-    show_cols = [c for c in show_cols if c in dsel.columns]
-    st.dataframe(dsel[show_cols].sort_values(["Company", "Year"]), use_container_width=True)
+    latest = dsel[dsel["Year"] == latest_year][
+        ["StockCode", "Company", "ESG_Stars"]
+    ].rename(columns={"ESG_Stars": "ESG_Latest"})
 
-    st.caption("Source: Bursa Malaysia PDFs of FTSE Russell ESG ratings (Main Market only).")
+    prev = dsel[dsel["Year"] == prev_year][
+        ["StockCode", "ESG_Stars"]
+    ].rename(columns={"ESG_Stars": "ESG_Previous"})
+
+    yoy = latest.merge(prev, on="StockCode", how="inner")
+    yoy["YoY_Change"] = yoy["ESG_Latest"] - yoy["ESG_Previous"]
+
+    increased = yoy[yoy["YoY_Change"] > 0][
+        ["Company", "ESG_Previous", "ESG_Latest", "YoY_Change"]
+    ]
+    constant = yoy[yoy["YoY_Change"] == 0][
+        ["Company", "ESG_Previous", "ESG_Latest", "YoY_Change"]
+    ]
+    decreased = yoy[yoy["YoY_Change"] < 0][
+        ["Company", "ESG_Previous", "ESG_Latest", "YoY_Change"]
+    ]
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown(f"### ⬆️ Increased ({prev_year} → {latest_year})")
+        st.dataframe(increased, use_container_width=True)
+
+    with c2:
+        st.markdown(f"### ➖ Constant ({prev_year} → {latest_year})")
+        st.dataframe(constant, use_container_width=True)
+
+    with c3:
+        st.markdown(f"### ⬇️ Decreased ({prev_year} → {latest_year})")
+        st.dataframe(decreased, use_container_width=True)
+
+    st.caption(
+        "Source: FTSE Russell ESG Ratings via Bursa Malaysia (Main Market). "
+        "YoY comparison is based on latest available year vs previous year."
+    )
+
 
 
