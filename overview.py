@@ -26,13 +26,60 @@ COMPETITORS = {
 }
 ALL = [BASE_NAME] + list(COMPETITORS.keys())
 
-CACHE_VERSION = 99  # bump this when you deploy to kill old cache
+CACHE_VERSION = 3  # bump to bust cache
+
+
+def _extract_close_series(df: pd.DataFrame) -> pd.Series:
+    """
+    yfinance can return:
+    - normal columns: ['Open','High','Low','Close',...]
+    - MultiIndex columns (Price, Ticker) or (Ticker, Price)
+
+    This function returns a 1D Close Series reliably.
+    """
+    if df is None or df.empty:
+        return pd.Series(dtype="float64")
+
+    # Normal case
+    if "Close" in df.columns and isinstance(df["Close"], pd.Series):
+        return df["Close"]
+
+    # MultiIndex columns
+    if isinstance(df.columns, pd.MultiIndex):
+        # Try common layouts
+        # 1) level contains 'Close'
+        for lvl in range(df.columns.nlevels):
+            if "Close" in df.columns.get_level_values(lvl):
+                try:
+                    close_df = df.xs("Close", axis=1, level=lvl)
+                    # close_df might still be DataFrame if multiple tickers
+                    if isinstance(close_df, pd.DataFrame):
+                        return close_df.iloc[:, 0]
+                    return close_df
+                except Exception:
+                    pass
+
+        # Fallback: search any column name containing 'Close'
+        close_cols = [c for c in df.columns if any(str(x).lower() == "close" for x in c)]
+        if close_cols:
+            s = df[close_cols[0]]
+            if isinstance(s, pd.DataFrame):
+                return s.iloc[:, 0]
+            return s
+
+    # Last resort: try attribute-style
+    if hasattr(df, "Close"):
+        s = getattr(df, "Close")
+        if isinstance(s, pd.Series):
+            return s
+
+    return pd.Series(dtype="float64")
 
 
 @st.cache_data(show_spinner=False)
-def fetch_ohlcv(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
+def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
     """
-    Use yf.download for better consistency than Ticker().history().
+    Fetch Close prices with yf.download(), robust to MultiIndex columns.
     """
     df = yf.download(
         tickers=ticker,
@@ -47,41 +94,47 @@ def fetch_ohlcv(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
     if df is None or df.empty:
         return pd.DataFrame()
 
-    df = df.reset_index()  # Date comes out
-    if "Datetime" in df.columns and "Date" not in df.columns:
-        df = df.rename(columns={"Datetime": "Date"})
+    close = _extract_close_series(df)
+    if close is None or close.empty:
+        return pd.DataFrame()
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Close"] = pd.to_numeric(df.get("Close"), errors="coerce")
-    df = df.dropna(subset=["Date", "Close"])
+    out = close.to_frame(name="Close").reset_index()
 
-    return df[["Date", "Close"]]
+    # Normalize date column name
+    if "Datetime" in out.columns and "Date" not in out.columns:
+        out = out.rename(columns={"Datetime": "Date"})
+    elif "index" in out.columns and "Date" not in out.columns:
+        out = out.rename(columns={"index": "Date"})
+
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
+    out = out.dropna(subset=["Date", "Close"])
+
+    return out[["Date", "Close"]]
 
 
 def ticker_for(company: str) -> str:
     return BASE_TICKER if company == BASE_NAME else COMPETITORS[company]
 
 
-def fix_bursa_unit_if_needed(df: pd.DataFrame) -> pd.DataFrame:
+def fix_bursa_unit_if_needed(df_all: pd.DataFrame) -> pd.DataFrame:
     """
-    If Yahoo gives Bursa prices like 265 / 759 / 1400 instead of 0.265 / 0.759 / 1.400,
-    the chart will be nonsense. This corrects ONLY when the values are clearly wrong.
+    If Yahoo returns Close in sen*1000 (e.g. 759), convert to RM (0.759).
+    Only apply when it's obviously wrong (max > 50).
     """
-    if df.empty:
-        return df
-
-    mx = float(df["Close"].max())
-    # LBS is cents stock. Even if it rallies hard, it's not 50+ RM.
+    if df_all.empty:
+        return df_all
+    mx = float(df_all["Close"].max())
     if mx > 50:
-        df = df.copy()
-        df["Close"] = df["Close"] / 1000.0
-    return df
+        df_all = df_all.copy()
+        df_all["Close"] = df_all["Close"] / 1000.0
+    return df_all
 
 
 def main():
     st.title("📊 Overview Dashboard")
 
-    # session state (unique ov_ keys so you don't collide with other pages)
+    # state
     if "ov_df_all" not in st.session_state:
         st.session_state.ov_df_all = pd.DataFrame()
     if "ov_generated" not in st.session_state:
@@ -89,6 +142,7 @@ def main():
     if "ov_picks" not in st.session_state:
         st.session_state.ov_picks = []
 
+    # UNIQUE keys (no collision)
     start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="ov_start")
     end_dt = st.date_input("End date", value=date.today(), key="ov_end")
     selected = st.multiselect("Select companies", options=ALL, default=[BASE_NAME], key="ov_companies")
@@ -102,13 +156,12 @@ def main():
             return
 
         dfs = []
-        with st.spinner("Fetching historical prices..."):
+        with st.spinner("Fetching historical share price..."):
             for comp in selected:
                 t = ticker_for(comp)
-                df = fetch_ohlcv(t, start_dt, end_dt + pd.Timedelta(days=1))
+                df = fetch_close(t, start_dt, end_dt + pd.Timedelta(days=1))
                 if df.empty:
                     continue
-
                 df["Company"] = comp
                 dfs.append(df)
 
@@ -123,7 +176,7 @@ def main():
         df_all = df_all.dropna(subset=["Date", "Close", "Company"])
         df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
 
-        # ✅ THIS is the thing that makes it match the dark chart you showed
+        # Make it match real Bursa chart shape/axis if Yahoo sent scaled units
         df_all = fix_bursa_unit_if_needed(df_all)
 
         st.session_state.ov_df_all = df_all
@@ -136,15 +189,14 @@ def main():
 
     df_all = st.session_state.ov_df_all.copy()
 
-    # DEBUG so you can SEE if Yahoo is the one sending garbage units
-    with st.expander("Debug (check if Yahoo is feeding wrong units)"):
+    # Debug so you can see if units are sane
+    with st.expander("Debug"):
         st.write("Close min:", float(df_all["Close"].min()))
         st.write("Close max:", float(df_all["Close"].max()))
         st.dataframe(df_all.head(10), use_container_width=True)
 
     st.subheader("Closing Price Comparison")
 
-    # keep trace order stable for click mapping
     company_order = list(df_all["Company"].unique())
 
     fig = px.line(df_all, x="Date", y="Close", color="Company", title="Closing Price", height=520)
@@ -169,6 +221,7 @@ def main():
         override_height=520,
     )
 
+    # record picks
     if clicked:
         c = clicked[0]
         curve = c.get("curveNumber")
