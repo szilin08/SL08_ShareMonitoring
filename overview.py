@@ -26,61 +26,36 @@ COMPETITORS = {
 }
 ALL = [BASE_NAME] + list(COMPETITORS.keys())
 
-CACHE_VERSION = 3  # bump to bust cache
+CACHE_VERSION = 7  # bump if streamlit cloud keeps old cache
 
 
+# ---------- yfinance close extraction (robust) ----------
 def _extract_close_series(df: pd.DataFrame) -> pd.Series:
-    """
-    yfinance can return:
-    - normal columns: ['Open','High','Low','Close',...]
-    - MultiIndex columns (Price, Ticker) or (Ticker, Price)
-
-    This function returns a 1D Close Series reliably.
-    """
     if df is None or df.empty:
         return pd.Series(dtype="float64")
 
-    # Normal case
     if "Close" in df.columns and isinstance(df["Close"], pd.Series):
         return df["Close"]
 
-    # MultiIndex columns
     if isinstance(df.columns, pd.MultiIndex):
-        # Try common layouts
-        # 1) level contains 'Close'
         for lvl in range(df.columns.nlevels):
             if "Close" in df.columns.get_level_values(lvl):
-                try:
-                    close_df = df.xs("Close", axis=1, level=lvl)
-                    # close_df might still be DataFrame if multiple tickers
-                    if isinstance(close_df, pd.DataFrame):
-                        return close_df.iloc[:, 0]
-                    return close_df
-                except Exception:
-                    pass
+                close_df = df.xs("Close", axis=1, level=lvl)
+                if isinstance(close_df, pd.DataFrame):
+                    return close_df.iloc[:, 0]
+                return close_df
 
-        # Fallback: search any column name containing 'Close'
+        # fallback
         close_cols = [c for c in df.columns if any(str(x).lower() == "close" for x in c)]
         if close_cols:
             s = df[close_cols[0]]
-            if isinstance(s, pd.DataFrame):
-                return s.iloc[:, 0]
-            return s
-
-    # Last resort: try attribute-style
-    if hasattr(df, "Close"):
-        s = getattr(df, "Close")
-        if isinstance(s, pd.Series):
-            return s
+            return s.iloc[:, 0] if isinstance(s, pd.DataFrame) else s
 
     return pd.Series(dtype="float64")
 
 
 @st.cache_data(show_spinner=False)
 def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
-    """
-    Fetch Close prices with yf.download(), robust to MultiIndex columns.
-    """
     df = yf.download(
         tickers=ticker,
         start=start_dt,
@@ -90,7 +65,6 @@ def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
         actions=False,
         threads=False,
     )
-
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -99,8 +73,6 @@ def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
         return pd.DataFrame()
 
     out = close.to_frame(name="Close").reset_index()
-
-    # Normalize date column name
     if "Datetime" in out.columns and "Date" not in out.columns:
         out = out.rename(columns={"Datetime": "Date"})
     elif "index" in out.columns and "Date" not in out.columns:
@@ -109,7 +81,6 @@ def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
     out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
     out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
     out = out.dropna(subset=["Date", "Close"])
-
     return out[["Date", "Close"]]
 
 
@@ -117,24 +88,48 @@ def ticker_for(company: str) -> str:
     return BASE_TICKER if company == BASE_NAME else COMPETITORS[company]
 
 
-def fix_bursa_unit_if_needed(df_all: pd.DataFrame) -> pd.DataFrame:
+# ---------- THIS is the key fix ----------
+def fix_mixed_units_per_company(df_all: pd.DataFrame) -> pd.DataFrame:
     """
-    If Yahoo returns Close in sen*1000 (e.g. 759), convert to RM (0.759).
-    Only apply when it's obviously wrong (max > 50).
+    Fix the exact mess you're seeing:
+    some rows are in RM (0.xx), some rows come back as 700/1400 etc.
+
+    We do NOT blindly scale everything.
+    We only scale the 'insane' rows.
     """
     if df_all.empty:
         return df_all
-    mx = float(df_all["Close"].max())
-    if mx > 50:
-        df_all = df_all.copy()
-        df_all["Close"] = df_all["Close"] / 1000.0
+
+    df_all = df_all.copy()
+
+    for comp in df_all["Company"].unique():
+        m = df_all["Company"] == comp
+        s = df_all.loc[m, "Close"].astype(float)
+
+        # If most values are "normal" (< 10) but max is huge => mixed unit issue
+        med = float(s.median())
+        mx = float(s.max())
+
+        if med < 10 and mx > 50:
+            # convert only the outliers
+            outlier_mask = m & (df_all["Close"] > 50)
+            df_all.loc[outlier_mask, "Close"] = df_all.loc[outlier_mask, "Close"] / 1000.0
+
+        # second-tier case (sometimes it's x100)
+        s2 = df_all.loc[m, "Close"].astype(float)
+        med2 = float(s2.median())
+        mx2 = float(s2.max())
+        if med2 < 10 and mx2 > 20:
+            outlier_mask = m & (df_all["Close"] > 20)
+            df_all.loc[outlier_mask, "Close"] = df_all.loc[outlier_mask, "Close"] / 100.0
+
     return df_all
 
 
 def main():
     st.title("📊 Overview Dashboard")
 
-    # state
+    # state (so clicks don't wipe the chart)
     if "ov_df_all" not in st.session_state:
         st.session_state.ov_df_all = pd.DataFrame()
     if "ov_generated" not in st.session_state:
@@ -142,7 +137,7 @@ def main():
     if "ov_picks" not in st.session_state:
         st.session_state.ov_picks = []
 
-    # UNIQUE keys (no collision)
+    # unique widget keys
     start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="ov_start")
     end_dt = st.date_input("End date", value=date.today(), key="ov_end")
     selected = st.multiselect("Select companies", options=ALL, default=[BASE_NAME], key="ov_companies")
@@ -158,8 +153,7 @@ def main():
         dfs = []
         with st.spinner("Fetching historical share price..."):
             for comp in selected:
-                t = ticker_for(comp)
-                df = fetch_close(t, start_dt, end_dt + pd.Timedelta(days=1))
+                df = fetch_close(ticker_for(comp), start_dt, end_dt + pd.Timedelta(days=1))
                 if df.empty:
                     continue
                 df["Company"] = comp
@@ -176,8 +170,8 @@ def main():
         df_all = df_all.dropna(subset=["Date", "Close", "Company"])
         df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
 
-        # Make it match real Bursa chart shape/axis if Yahoo sent scaled units
-        df_all = fix_bursa_unit_if_needed(df_all)
+        # ✅ FIX the mixed unit rows (this removes the 0→1400 ramp)
+        df_all = fix_mixed_units_per_company(df_all)
 
         st.session_state.ov_df_all = df_all
         st.session_state.ov_generated = True
@@ -189,11 +183,12 @@ def main():
 
     df_all = st.session_state.ov_df_all.copy()
 
-    # Debug so you can see if units are sane
+    # quick proof (so you can see it’s fixed)
     with st.expander("Debug"):
         st.write("Close min:", float(df_all["Close"].min()))
         st.write("Close max:", float(df_all["Close"].max()))
-        st.dataframe(df_all.head(10), use_container_width=True)
+        st.write("Any Close > 20 still present?", bool((df_all["Close"] > 20).any()))
+        st.dataframe(df_all.tail(10), use_container_width=True)
 
     st.subheader("Closing Price Comparison")
 
@@ -221,7 +216,6 @@ def main():
         override_height=520,
     )
 
-    # record picks
     if clicked:
         c = clicked[0]
         curve = c.get("curveNumber")
