@@ -53,26 +53,27 @@ ALL_COMPANIES = [BASE_COMPANY_NAME] + list(COMPETITORS.keys())
 # -------------------------
 @st.cache_data(show_spinner=False)
 def fetch_history(ticker: str, start_dt: date, end_dt: date) -> pd.DataFrame:
-    """
-    Fetch daily price history from yfinance.
-    NOTE: yfinance end is effectively exclusive, so pass end+1 day to include end date.
-    """
     df = yf.Ticker(ticker).history(start=start_dt, end=end_dt)
+
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.reset_index()
+
     if "Datetime" in df.columns and "Date" not in df.columns:
         df = df.rename(columns={"Datetime": "Date"})
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
 
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+    # 🔥 NORMALISE BURSA PRICES
+    # If prices look like 300–1000+, convert to RM
+    if df["Close"].max() > 20:   # RM stocks never trade >20 normally
+        df["Close"] = df["Close"] / 1000
 
     df = df.dropna(subset=["Date", "Close"])
     return df
+
 
 
 def _ticker_for_company(company: str) -> str:
@@ -326,6 +327,7 @@ def main():
         st.info("This requires additional data (annual reports / sales target dataset).")
     else:
         st.caption("Select companies + dates, then click **Generate Overview**.")
+
 
 
 
