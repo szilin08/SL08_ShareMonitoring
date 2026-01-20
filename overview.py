@@ -1,6 +1,7 @@
 # overview.py
 # Streamlit: Overview Dashboard
-# - Closing Price comparison (click 2 points -> show Δ + %)
+# - Closing Price comparison (dark TradingView-ish look)
+# - Click 2 points -> show Δ + %
 # - Revenue vs PATMI (from financials.py)
 # - Sales placeholder
 
@@ -12,6 +13,7 @@ import plotly.graph_objects as go
 from datetime import date
 
 from streamlit_plotly_events import plotly_events
+
 
 # -------------------------
 # OPTIONAL: your financials helpers
@@ -47,33 +49,52 @@ COMPETITORS = {
 
 ALL_COMPANIES = [BASE_COMPANY_NAME] + list(COMPETITORS.keys())
 
+# Cache-buster: bump this if you change fetch logic (prevents old cached prices)
+CACHE_VERSION = 3
+
 
 # -------------------------
 # Data fetch
 # -------------------------
 @st.cache_data(show_spinner=False)
-def fetch_history(ticker: str, start_dt: date, end_dt: date) -> pd.DataFrame:
+def fetch_history(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
+    """
+    Fetch daily price history from yfinance.
+    NOTE: yfinance end is effectively exclusive, so caller should pass end+1 day if they want inclusive.
+    """
     df = yf.Ticker(ticker).history(start=start_dt, end=end_dt)
-
     if df is None or df.empty:
         return pd.DataFrame()
 
     df = df.reset_index()
-
     if "Datetime" in df.columns and "Date" not in df.columns:
         df = df.rename(columns={"Datetime": "Date"})
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
 
-    # 🔥 NORMALISE BURSA PRICES
-    # If prices look like 300–1000+, convert to RM
-    if df["Close"].max() > 20:   # RM stocks never trade >20 normally
-        df["Close"] = df["Close"] / 1000
+    for col in ["Open", "High", "Low", "Close", "Volume"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna(subset=["Date", "Close"])
-    return df
 
+    # --- Normalize Bursa scaling weirdness ---
+    # We want RM like 0.265 not 265 or 759.
+    max_close = df["Close"].max()
+    if pd.notna(max_close):
+        if max_close > 50:  # e.g. 265, 759 -> divide by 1000
+            scale = 1000.0
+        elif max_close > 20:  # fallback
+            scale = 100.0
+        else:
+            scale = 1.0
+
+        if scale != 1.0:
+            for c in ["Open", "High", "Low", "Close"]:
+                if c in df.columns:
+                    df[c] = df[c] / scale
+
+    return df
 
 
 def _ticker_for_company(company: str) -> str:
@@ -81,7 +102,7 @@ def _ticker_for_company(company: str) -> str:
 
 
 # -------------------------
-# Closing Price chart + 2-point pick
+# Closing Price chart + 2-point pick (dark look)
 # -------------------------
 def closing_price_chart_with_picks(df_all: pd.DataFrame):
     st.subheader("Closing Price Comparison")
@@ -95,7 +116,7 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
     df_all["Close"] = pd.to_numeric(df_all["Close"], errors="coerce")
     df_all = df_all.dropna(subset=["Date", "Close", "Company"])
 
-    # Stable order so curveNumber mapping is consistent
+    # Stable company order for curveNumber mapping
     company_order = sorted(df_all["Company"].unique().tolist())
     df_all["Company"] = pd.Categorical(df_all["Company"], categories=company_order, ordered=True)
     df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
@@ -103,7 +124,7 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
     if "picked_points_close" not in st.session_state:
         st.session_state.picked_points_close = []
 
-    # Build chart (match your screenshot style)
+    # Chart (keep simple line chart but dark like your screenshot)
     fig = px.line(
         df_all,
         x="Date",
@@ -111,15 +132,34 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
         color="Company",
         title="Closing Price",
     )
-    fig.update_traces(mode="lines")
+
+    fig.update_traces(mode="lines", line=dict(width=2))
+
     fig.update_layout(
+        template="plotly_dark",
         hovermode="x unified",
-        height=500,
+        height=520,
         margin=dict(l=10, r=10, t=50, b=10),
         legend_title_text="Company",
+        paper_bgcolor="#0b0f14",
+        plot_bgcolor="#0b0f14",
+        font=dict(color="white"),
     )
-    fig.update_xaxes(title_text="Date")
-    fig.update_yaxes(title_text="Close", tickformat=".4f")
+
+    fig.update_xaxes(
+        title_text="Date",
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+        zeroline=False,
+    )
+
+    fig.update_yaxes(
+        title_text="Close",
+        tickformat=".4f",
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+        zeroline=False,
+    )
 
     clicked = plotly_events(
         fig,
@@ -127,31 +167,29 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
         select_event=False,
         hover_event=False,
         key="close_price_plotly_events",
-        override_height=500,
+        override_height=520,
     )
 
+    # Record clicked point
     if clicked:
         c = clicked[0]
         curve = c.get("curveNumber")
         point_index = c.get("pointIndex")
 
-        if curve is not None and point_index is not None:
-            companies_in_plot = list(df_all["Company"].cat.categories)
+        if curve is not None and point_index is not None and 0 <= curve < len(company_order):
+            company = company_order[curve]
+            df_comp = df_all[df_all["Company"] == company].reset_index(drop=True)
 
-            if 0 <= curve < len(companies_in_plot):
-                company = companies_in_plot[curve]
-                df_comp = df_all[df_all["Company"] == company].reset_index(drop=True)
+            if 0 <= point_index < len(df_comp):
+                row = df_comp.loc[point_index]
+                st.session_state.picked_points_close.append({
+                    "Company": company,
+                    "Date": pd.to_datetime(row["Date"]),
+                    "Close": float(row["Close"]),
+                })
+                st.session_state.picked_points_close = st.session_state.picked_points_close[-2:]
 
-                if 0 <= point_index < len(df_comp):
-                    row = df_comp.loc[point_index]
-                    picked = {
-                        "Company": company,
-                        "Date": pd.to_datetime(row["Date"]),
-                        "Close": float(row["Close"]),
-                    }
-                    st.session_state.picked_points_close.append(picked)
-                    st.session_state.picked_points_close = st.session_state.picked_points_close[-2:]
-
+    # Picks UI
     picks = st.session_state.picked_points_close
     a, b, c = st.columns([1.2, 1.2, 0.7])
 
@@ -162,7 +200,7 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
             st.caption(p1["Company"])
             st.write(f"{p1['Date'].date()} • **{p1['Close']:.4f}**")
         else:
-            st.caption("Click a point")
+            st.caption("Click a point on the chart")
 
     with b:
         st.write("**Pick #2**")
@@ -178,6 +216,7 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
             st.session_state.picked_points_close = []
             st.rerun()
 
+    # Difference
     if len(picks) == 2:
         p1, p2 = picks
         diff = p2["Close"] - p1["Close"]
@@ -267,7 +306,10 @@ def main():
         st.session_state.overview_start_dt = date(2020, 1, 1)
     if "overview_end_dt" not in st.session_state:
         st.session_state.overview_end_dt = date.today()
+    if "picked_points_close" not in st.session_state:
+        st.session_state.picked_points_close = []
 
+    # Inputs
     start_dt = st.date_input("Start date", value=st.session_state.overview_start_dt, key="overview_start")
     end_dt = st.date_input("End date", value=st.session_state.overview_end_dt, key="overview_end")
 
@@ -282,6 +324,7 @@ def main():
     st.session_state.overview_end_dt = end_dt
     st.session_state.overview_selected_companies = selected_companies
 
+    # Generate button: fetch + store only
     if st.button("Generate Overview", type="primary"):
         if not selected_companies:
             st.warning("Pick at least one company.")
@@ -317,6 +360,7 @@ def main():
 
         st.rerun()
 
+    # Render charts even on reruns (clicks trigger reruns)
     if st.session_state.overview_generated and not st.session_state.overview_df_all.empty:
         df_all = st.session_state.overview_df_all.copy()
 
@@ -327,7 +371,5 @@ def main():
         st.info("This requires additional data (annual reports / sales target dataset).")
     else:
         st.caption("Select companies + dates, then click **Generate Overview**.")
-
-
 
 
