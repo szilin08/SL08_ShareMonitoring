@@ -24,9 +24,9 @@ COMPETITORS = {
     "OSK Holdings": "5053.KL",
     "UOA Development": "5200.KL",
 }
-ALL = [BASE_NAME] + list(COMPETITORS.keys())
+ALL_COMPANIES = [BASE_NAME] + list(COMPETITORS.keys())
 
-CACHE_VERSION = 1  # bump this if Streamlit Cloud stubbornly caches
+CACHE_VERSION = 1  # bump if Streamlit Cloud cache is stubborn
 
 
 def ticker_for(company: str) -> str:
@@ -34,9 +34,10 @@ def ticker_for(company: str) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def fetch_price(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
+def fetch_close_series(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
     """
-    Use Ticker().history() for single ticker (no MultiIndex columns).
+    Fetch Close prices safely. Uses Ticker().history() to avoid MultiIndex junk.
+    Returns ONLY: Date, Close
     """
     df = yf.Ticker(ticker).history(start=start_dt, end=end_dt)
 
@@ -45,24 +46,47 @@ def fetch_price(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSI
 
     df = df.reset_index()
 
-    # yfinance sometimes returns 'Date' or 'Datetime'
+    # normalize date column name
     if "Datetime" in df.columns and "Date" not in df.columns:
         df = df.rename(columns={"Datetime": "Date"})
 
     if "Date" not in df.columns or "Close" not in df.columns:
         return pd.DataFrame()
 
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    out = df[["Date", "Close"]].copy()
+    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
+    out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
+    out = out.dropna(subset=["Date", "Close"])
 
-    df = df.dropna(subset=["Date", "Close"]).copy()
-    return df[["Date", "Close"]]
+    # IMPORTANT: remove timezone so Plotly behaves consistently
+    try:
+        out["Date"] = out["Date"].dt.tz_localize(None)
+    except Exception:
+        pass
+
+    return out
+
+
+def build_chart(df_all: pd.DataFrame) -> px.line:
+    fig = px.line(df_all, x="Date", y="Close", color="Company", title="Closing Price", height=520)
+    fig.update_traces(mode="lines", line=dict(width=2))
+    fig.update_layout(
+        template="plotly_dark",
+        hovermode="x unified",
+        paper_bgcolor="#0b0f14",
+        plot_bgcolor="#0b0f14",
+        margin=dict(l=10, r=10, t=50, b=10),
+        legend_title_text="Company",
+    )
+    fig.update_xaxes(title_text="Date", gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    fig.update_yaxes(title_text="Close", gridcolor="rgba(255,255,255,0.08)", zeroline=False, tickformat=".4f")
+    return fig
 
 
 def main():
     st.title("📊 Overview Dashboard")
 
-    # Session state so clicks don't wipe the page
+    # --- persistent state (so clicks don’t wipe everything) ---
     if "ov_df_all" not in st.session_state:
         st.session_state.ov_df_all = pd.DataFrame()
     if "ov_generated" not in st.session_state:
@@ -70,11 +94,12 @@ def main():
     if "ov_picks" not in st.session_state:
         st.session_state.ov_picks = []
 
-    # Inputs (unique keys)
+    # --- inputs (unique keys) ---
     start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="ov_start")
     end_dt = st.date_input("End date", value=date.today(), key="ov_end")
-    selected = st.multiselect("Select companies", options=ALL, default=[BASE_NAME], key="ov_companies")
+    selected = st.multiselect("Select companies", options=ALL_COMPANIES, default=[BASE_NAME], key="ov_companies")
 
+    # --- fetch once on button ---
     if st.button("Generate Overview", type="primary", key="ov_generate"):
         if not selected:
             st.warning("Pick at least one company.")
@@ -87,7 +112,7 @@ def main():
         with st.spinner("Fetching share price..."):
             for comp in selected:
                 t = ticker_for(comp)
-                df = fetch_price(t, start_dt, end_dt + pd.Timedelta(days=1))
+                df = fetch_close_series(t, start_dt, end_dt + pd.Timedelta(days=1))
                 if df.empty:
                     continue
                 df["Company"] = comp
@@ -100,10 +125,11 @@ def main():
             st.session_state.ov_picks = []
             return
 
-        # ✅ Clean combine (NO keys=..., NO extra index columns)
+        # ✅ combine cleanly — NO keys=..., NO index columns
         df_all = pd.concat(dfs, ignore_index=True)
 
-        # ✅ Hard clean (prevents the stupid straight-line bug)
+        # ✅ force only the correct columns (prevents the linear-ramp bug)
+        df_all = df_all[["Date", "Close", "Company"]].copy()
         df_all["Date"] = pd.to_datetime(df_all["Date"], errors="coerce")
         df_all["Close"] = pd.to_numeric(df_all["Close"], errors="coerce")
         df_all = df_all.dropna(subset=["Date", "Close", "Company"])
@@ -117,44 +143,25 @@ def main():
         st.caption("Pick companies + dates, then click **Generate Overview**.")
         return
 
-    df_all = st.session_state.ov_df_all.copy()
-
-    # If you STILL see 0→1500, this proves what's wrong immediately.
-    # Remove later if you want.
-    with st.expander("Debug"):
-        st.write("Close min:", float(df_all["Close"].min()))
-        st.write("Close max:", float(df_all["Close"].max()))
-        st.dataframe(df_all.head(8), use_container_width=True)
-        st.dataframe(df_all.tail(8), use_container_width=True)
+    df_all = st.session_state.ov_df_all
 
     st.subheader("Closing Price Comparison")
 
-    # Keep trace order stable for click mapping
+    # stable order for click mapping
     company_order = list(df_all["Company"].unique())
 
-    fig = px.line(df_all, x="Date", y="Close", color="Company", title="Closing Price", height=520)
-    fig.update_traces(mode="lines", line=dict(width=2))
-    fig.update_layout(
-        template="plotly_dark",
-        hovermode="x unified",
-        paper_bgcolor="#0b0f14",
-        plot_bgcolor="#0b0f14",
-        margin=dict(l=10, r=10, t=50, b=10),
-        legend_title_text="Company",
-    )
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, title="Date")
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, title="Close", tickformat=".4f")
+    fig = build_chart(df_all)
 
     clicked = plotly_events(
         fig,
         click_event=True,
         select_event=False,
         hover_event=False,
-        key="ov_close_clicks",
+        key="ov_clicks",
         override_height=520,
     )
 
-    # Record picks
+    # --- store click points ---
     if clicked:
         c = clicked[0]
         curve = c.get("curveNumber")
@@ -172,8 +179,8 @@ def main():
                 st.session_state.ov_picks = st.session_state.ov_picks[-2:]
 
     picks = st.session_state.ov_picks
-    c1, c2, c3 = st.columns([1.2, 1.2, 0.7])
 
+    c1, c2, c3 = st.columns([1.2, 1.2, 0.7])
     with c1:
         st.write("**Pick #1**")
         if len(picks) >= 1:
@@ -181,7 +188,7 @@ def main():
             st.caption(p1["Company"])
             st.write(f"{p1['Date'].date()} • **{p1['Close']:.4f}**")
         else:
-            st.caption("Click a point")
+            st.caption("Click a point on the chart")
 
     with c2:
         st.write("**Pick #2**")
@@ -193,7 +200,7 @@ def main():
             st.caption("Click a second point")
 
     with c3:
-        if st.button("Reset picks", key="ov_reset_picks"):
+        if st.button("Reset picks", key="ov_reset"):
             st.session_state.ov_picks = []
             st.rerun()
 
