@@ -1,35 +1,13 @@
 # overview.py
-# Streamlit: Overview Dashboard
-# - Closing Price comparison (dark TradingView-ish look)
-# - Click 2 points -> show Δ + %
-# - Revenue vs PATMI (from financials.py)
-# - Sales placeholder
+# Simple: Historical Close price + 2-point pick variance (NO scaling)
 
 import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.express as px
-import plotly.graph_objects as go
 from datetime import date
-
 from streamlit_plotly_events import plotly_events
 
-
-# -------------------------
-# OPTIONAL: your financials helpers
-# -------------------------
-try:
-    from financials import get_revenue_data, get_patmi_data
-    FINANCIALS_OK = True
-except Exception:
-    FINANCIALS_OK = False
-    get_revenue_data = None
-    get_patmi_data = None
-
-
-# -------------------------
-# Config
-# -------------------------
 BASE_COMPANY_NAME = "LBS Bina"
 BASE_TICKER = "5789.KL"
 
@@ -46,22 +24,13 @@ COMPETITORS = {
     "OSK Holdings": "5053.KL",
     "UOA Development": "5200.KL",
 }
-
 ALL_COMPANIES = [BASE_COMPANY_NAME] + list(COMPETITORS.keys())
 
-# Cache-buster: bump this if you change fetch logic (prevents old cached prices)
-CACHE_VERSION = 3
+CACHE_VERSION = 1  # bump if you change fetch logic
 
 
-# -------------------------
-# Data fetch
-# -------------------------
 @st.cache_data(show_spinner=False)
-def fetch_history(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
-    """
-    Fetch daily price history from yfinance.
-    NOTE: yfinance end is effectively exclusive, so caller should pass end+1 day if they want inclusive.
-    """
+def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
     df = yf.Ticker(ticker).history(start=start_dt, end=end_dt)
     if df is None or df.empty:
         return pd.DataFrame()
@@ -71,60 +40,88 @@ def fetch_history(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VER
         df = df.rename(columns={"Datetime": "Date"})
 
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-
-    for col in ["Open", "High", "Low", "Close", "Volume"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
     df = df.dropna(subset=["Date", "Close"])
-
-    # --- Normalize Bursa scaling weirdness ---
-    # We want RM like 0.265 not 265 or 759.
-    max_close = df["Close"].max()
-    if pd.notna(max_close):
-        if max_close > 50:  # e.g. 265, 759 -> divide by 1000
-            scale = 1000.0
-        elif max_close > 20:  # fallback
-            scale = 100.0
-        else:
-            scale = 1.0
-
-        if scale != 1.0:
-            for c in ["Open", "High", "Low", "Close"]:
-                if c in df.columns:
-                    df[c] = df[c] / scale
-
-    return df
+    return df[["Date", "Close"]]
 
 
-def _ticker_for_company(company: str) -> str:
+def ticker_for(company: str) -> str:
     return BASE_TICKER if company == BASE_COMPANY_NAME else COMPETITORS[company]
 
 
-# -------------------------
-# Closing Price chart + 2-point pick (dark look)
-# -------------------------
-def closing_price_chart_with_picks(df_all: pd.DataFrame):
-    st.subheader("Closing Price Comparison")
+def main():
+    st.title("📊 Overview Dashboard")
 
-    if df_all is None or df_all.empty:
-        st.warning("No data returned for the selected period / companies.")
+    # state so clicks don't reset
+    if "generated" not in st.session_state:
+        st.session_state.generated = False
+    if "df_all" not in st.session_state:
+        st.session_state.df_all = pd.DataFrame()
+    if "picks" not in st.session_state:
+        st.session_state.picks = []
+
+    start_dt = st.date_input("Start date", value=date(2020, 1, 1))
+    end_dt = st.date_input("End date", value=date.today())
+
+    selected = st.multiselect(
+        "Select companies",
+        options=ALL_COMPANIES,
+        default=[BASE_COMPANY_NAME],
+    )
+
+    if st.button("Generate Overview", type="primary"):
+        if not selected:
+            st.warning("Pick at least one company.")
+            st.session_state.generated = False
+            st.session_state.df_all = pd.DataFrame()
+            st.session_state.picks = []
+            st.rerun()
+
+        if start_dt >= end_dt:
+            st.warning("Start date must be earlier than end date.")
+            st.session_state.generated = False
+            st.session_state.df_all = pd.DataFrame()
+            st.session_state.picks = []
+            st.rerun()
+
+        dfs = []
+        with st.spinner("Fetching price data..."):
+            for comp in selected:
+                t = ticker_for(comp)
+                # end is exclusive-ish, so add a day
+                df = fetch_close(t, start_dt, end_dt + pd.Timedelta(days=1))
+                if df.empty:
+                    continue
+                df["Company"] = comp
+                dfs.append(df)
+
+        if not dfs:
+            st.warning("No data returned from Yahoo for that range.")
+            st.session_state.generated = False
+            st.session_state.df_all = pd.DataFrame()
+            st.session_state.picks = []
+            st.rerun()
+
+        df_all = pd.concat(dfs, ignore_index=True)
+
+        # stable order for curve mapping
+        company_order = sorted(df_all["Company"].unique().tolist())
+        df_all["Company"] = pd.Categorical(df_all["Company"], categories=company_order, ordered=True)
+        df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
+
+        st.session_state.df_all = df_all
+        st.session_state.generated = True
+        st.session_state.picks = []  # reset picks each generate
+        st.rerun()
+
+    if not st.session_state.generated or st.session_state.df_all.empty:
+        st.caption("Select companies + dates, then click **Generate Overview**.")
         return
 
-    df_all = df_all.copy()
-    df_all["Date"] = pd.to_datetime(df_all["Date"], errors="coerce")
-    df_all["Close"] = pd.to_numeric(df_all["Close"], errors="coerce")
-    df_all = df_all.dropna(subset=["Date", "Close", "Company"])
+    df_all = st.session_state.df_all.copy()
 
-    # Stable company order for curveNumber mapping
-    company_order = sorted(df_all["Company"].unique().tolist())
-    df_all["Company"] = pd.Categorical(df_all["Company"], categories=company_order, ordered=True)
-    df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
+    st.subheader("Closing Price Comparison")
 
-    if "picked_points_close" not in st.session_state:
-        st.session_state.picked_points_close = []
-
-    # Chart (keep simple line chart but dark like your screenshot)
     fig = px.line(
         df_all,
         x="Date",
@@ -133,48 +130,35 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
         title="Closing Price",
     )
 
+    # dark + clean
     fig.update_traces(mode="lines", line=dict(width=2))
-
     fig.update_layout(
         template="plotly_dark",
         hovermode="x unified",
         height=520,
         margin=dict(l=10, r=10, t=50, b=10),
-        legend_title_text="Company",
         paper_bgcolor="#0b0f14",
         plot_bgcolor="#0b0f14",
-        font=dict(color="white"),
+        legend_title_text="Company",
     )
-
-    fig.update_xaxes(
-        title_text="Date",
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.08)",
-        zeroline=False,
-    )
-
-    fig.update_yaxes(
-        title_text="Close",
-        tickformat=".4f",
-        showgrid=True,
-        gridcolor="rgba(255,255,255,0.08)",
-        zeroline=False,
-    )
+    fig.update_xaxes(title_text="Date", gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    fig.update_yaxes(title_text="Close", gridcolor="rgba(255,255,255,0.08)", zeroline=False)
 
     clicked = plotly_events(
         fig,
         click_event=True,
         select_event=False,
         hover_event=False,
-        key="close_price_plotly_events",
+        key="close_price_clicks",
         override_height=520,
     )
 
-    # Record clicked point
     if clicked:
         c = clicked[0]
         curve = c.get("curveNumber")
         point_index = c.get("pointIndex")
+
+        company_order = list(df_all["Company"].cat.categories)
 
         if curve is not None and point_index is not None and 0 <= curve < len(company_order):
             company = company_order[curve]
@@ -182,15 +166,14 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
 
             if 0 <= point_index < len(df_comp):
                 row = df_comp.loc[point_index]
-                st.session_state.picked_points_close.append({
+                st.session_state.picks.append({
                     "Company": company,
                     "Date": pd.to_datetime(row["Date"]),
                     "Close": float(row["Close"]),
                 })
-                st.session_state.picked_points_close = st.session_state.picked_points_close[-2:]
+                st.session_state.picks = st.session_state.picks[-2:]
 
-    # Picks UI
-    picks = st.session_state.picked_points_close
+    picks = st.session_state.picks
     a, b, c = st.columns([1.2, 1.2, 0.7])
 
     with a:
@@ -200,7 +183,7 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
             st.caption(p1["Company"])
             st.write(f"{p1['Date'].date()} • **{p1['Close']:.4f}**")
         else:
-            st.caption("Click a point on the chart")
+            st.caption("Click a point")
 
     with b:
         st.write("**Pick #2**")
@@ -212,11 +195,10 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
             st.caption("Click a second point")
 
     with c:
-        if st.button("Reset picks", key="reset_close_picks"):
-            st.session_state.picked_points_close = []
+        if st.button("Reset picks", key="reset_picks"):
+            st.session_state.picks = []
             st.rerun()
 
-    # Difference
     if len(picks) == 2:
         p1, p2 = picks
         diff = p2["Close"] - p1["Close"]
@@ -229,147 +211,6 @@ def closing_price_chart_with_picks(df_all: pd.DataFrame):
         st.write(f"**Days between:** {days} day(s)")
 
         if p1["Company"] != p2["Company"]:
-            st.warning("Pick both points on the same company line for a clean A→B move.")
-
-
-# -------------------------
-# Revenue vs PATMI chart
-# -------------------------
-def revenue_patmi_chart(selected_companies, start_dt, end_dt):
-    st.subheader("💰 Revenue vs PATMI Comparison")
-
-    if not FINANCIALS_OK:
-        st.info("financials.py not available / not implemented. Skipping Revenue vs PATMI.")
-        return
-
-    rev_df = get_revenue_data(selected_companies, start_dt, end_dt)
-    patmi_df = get_patmi_data(selected_companies, start_dt, end_dt)
-
-    if rev_df is None or patmi_df is None or rev_df.empty or patmi_df.empty:
-        st.warning("No Revenue or PATMI data available for the selected period.")
-        return
-
-    combined = rev_df.merge(patmi_df, on="Company", how="inner").copy()
-    if combined.empty:
-        st.warning("Revenue and PATMI couldn't be matched (Company keys mismatch).")
-        return
-
-    combined["Revenue_M"] = (combined["Revenue"] / 1_000).round(2)
-    combined["PATMI_M"] = (combined["PATMI"] / 1_000).round(2)
-
-    fig = go.Figure(
-        data=[
-            go.Bar(
-                name="Revenue",
-                x=combined["Company"],
-                y=combined["Revenue"],
-                text=combined["Revenue_M"].astype(str) + "M",
-                textposition="outside",
-            ),
-            go.Bar(
-                name="PATMI",
-                x=combined["Company"],
-                y=combined["PATMI"],
-                text=combined["PATMI_M"].astype(str) + "M",
-                textposition="outside",
-            ),
-        ]
-    )
-
-    fig.update_layout(
-        barmode="group",
-        title=f"Revenue vs PATMI ({start_dt} → {end_dt})",
-        xaxis_title="Company",
-        yaxis_title="Amount (RM)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        height=520,
-        margin=dict(l=10, r=10, t=60, b=10),
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-
-# -------------------------
-# Main
-# -------------------------
-def main():
-    st.title("📊 Overview Dashboard")
-
-    # Persistent state (prevents reset on click)
-    if "overview_generated" not in st.session_state:
-        st.session_state.overview_generated = False
-    if "overview_df_all" not in st.session_state:
-        st.session_state.overview_df_all = pd.DataFrame()
-    if "overview_selected_companies" not in st.session_state:
-        st.session_state.overview_selected_companies = [BASE_COMPANY_NAME]
-    if "overview_start_dt" not in st.session_state:
-        st.session_state.overview_start_dt = date(2020, 1, 1)
-    if "overview_end_dt" not in st.session_state:
-        st.session_state.overview_end_dt = date.today()
-    if "picked_points_close" not in st.session_state:
-        st.session_state.picked_points_close = []
-
-    # Inputs
-    start_dt = st.date_input("Start date", value=st.session_state.overview_start_dt, key="overview_start")
-    end_dt = st.date_input("End date", value=st.session_state.overview_end_dt, key="overview_end")
-
-    selected_companies = st.multiselect(
-        "Select companies",
-        options=ALL_COMPANIES,
-        default=st.session_state.overview_selected_companies,
-        key="overview_companies",
-    )
-
-    st.session_state.overview_start_dt = start_dt
-    st.session_state.overview_end_dt = end_dt
-    st.session_state.overview_selected_companies = selected_companies
-
-    # Generate button: fetch + store only
-    if st.button("Generate Overview", type="primary"):
-        if not selected_companies:
-            st.warning("Pick at least one company.")
-            st.session_state.overview_generated = False
-            st.session_state.overview_df_all = pd.DataFrame()
-            st.rerun()
-
-        if start_dt >= end_dt:
-            st.warning("Start date must be earlier than end date.")
-            st.session_state.overview_generated = False
-            st.session_state.overview_df_all = pd.DataFrame()
-            st.rerun()
-
-        dfs = []
-        with st.spinner("Fetching price data..."):
-            for comp in selected_companies:
-                ticker = _ticker_for_company(comp)
-                df = fetch_history(ticker, start_dt, end_dt + pd.Timedelta(days=1))
-                if df.empty:
-                    continue
-                df["Company"] = comp
-                dfs.append(df)
-
-        if not dfs:
-            st.warning("No stock data fetched. Check tickers/date range.")
-            st.session_state.overview_generated = False
-            st.session_state.overview_df_all = pd.DataFrame()
-        else:
-            df_all = pd.concat(dfs, ignore_index=True)
-            st.session_state.overview_df_all = df_all
-            st.session_state.overview_generated = True
-            st.session_state.picked_points_close = []  # reset picks each generate
-
-        st.rerun()
-
-    # Render charts even on reruns (clicks trigger reruns)
-    if st.session_state.overview_generated and not st.session_state.overview_df_all.empty:
-        df_all = st.session_state.overview_df_all.copy()
-
-        closing_price_chart_with_picks(df_all)
-        revenue_patmi_chart(selected_companies, start_dt, end_dt)
-
-        st.subheader("🎯 Sales Target vs Actual (Placeholder)")
-        st.info("This requires additional data (annual reports / sales target dataset).")
-    else:
-        st.caption("Select companies + dates, then click **Generate Overview**.")
+            st.warning("Pick both points on the same company line if you want a clean A→B variance.")
 
 
