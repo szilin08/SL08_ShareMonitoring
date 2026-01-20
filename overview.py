@@ -26,20 +26,35 @@ COMPETITORS = {
 }
 ALL = [BASE_NAME] + list(COMPETITORS.keys())
 
-CACHE_VERSION = 1  # bump if needed
+CACHE_VERSION = 99  # bump this when you deploy to kill old cache
 
 
 @st.cache_data(show_spinner=False)
-def fetch_history(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
-    df = yf.Ticker(ticker).history(start=start_dt, end=end_dt)
+def fetch_ohlcv(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
+    """
+    Use yf.download for better consistency than Ticker().history().
+    """
+    df = yf.download(
+        tickers=ticker,
+        start=start_dt,
+        end=end_dt,
+        progress=False,
+        auto_adjust=False,
+        actions=False,
+        threads=False,
+    )
+
     if df is None or df.empty:
         return pd.DataFrame()
-    df = df.reset_index()
+
+    df = df.reset_index()  # Date comes out
     if "Datetime" in df.columns and "Date" not in df.columns:
         df = df.rename(columns={"Datetime": "Date"})
+
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df["Close"] = pd.to_numeric(df.get("Close"), errors="coerce")
     df = df.dropna(subset=["Date", "Close"])
+
     return df[["Date", "Close"]]
 
 
@@ -47,10 +62,26 @@ def ticker_for(company: str) -> str:
     return BASE_TICKER if company == BASE_NAME else COMPETITORS[company]
 
 
+def fix_bursa_unit_if_needed(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    If Yahoo gives Bursa prices like 265 / 759 / 1400 instead of 0.265 / 0.759 / 1.400,
+    the chart will be nonsense. This corrects ONLY when the values are clearly wrong.
+    """
+    if df.empty:
+        return df
+
+    mx = float(df["Close"].max())
+    # LBS is cents stock. Even if it rallies hard, it's not 50+ RM.
+    if mx > 50:
+        df = df.copy()
+        df["Close"] = df["Close"] / 1000.0
+    return df
+
+
 def main():
     st.title("📊 Overview Dashboard")
 
-    # session state so click reruns don't wipe results
+    # session state (unique ov_ keys so you don't collide with other pages)
     if "ov_df_all" not in st.session_state:
         st.session_state.ov_df_all = pd.DataFrame()
     if "ov_generated" not in st.session_state:
@@ -58,7 +89,6 @@ def main():
     if "ov_picks" not in st.session_state:
         st.session_state.ov_picks = []
 
-    # UNIQUE KEYS (no collision with other pages)
     start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="ov_start")
     end_dt = st.date_input("End date", value=date.today(), key="ov_end")
     selected = st.multiselect("Select companies", options=ALL, default=[BASE_NAME], key="ov_companies")
@@ -72,11 +102,13 @@ def main():
             return
 
         dfs = []
-        with st.spinner("Fetching historical share price..."):
+        with st.spinner("Fetching historical prices..."):
             for comp in selected:
-                df = fetch_history(ticker_for(comp), start_dt, end_dt + pd.Timedelta(days=1))
+                t = ticker_for(comp)
+                df = fetch_ohlcv(t, start_dt, end_dt + pd.Timedelta(days=1))
                 if df.empty:
                     continue
+
                 df["Company"] = comp
                 dfs.append(df)
 
@@ -88,11 +120,15 @@ def main():
             return
 
         df_all = pd.concat(dfs, ignore_index=True)
+        df_all = df_all.dropna(subset=["Date", "Close", "Company"])
         df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
+
+        # ✅ THIS is the thing that makes it match the dark chart you showed
+        df_all = fix_bursa_unit_if_needed(df_all)
 
         st.session_state.ov_df_all = df_all
         st.session_state.ov_generated = True
-        st.session_state.ov_picks = []  # reset picks on new fetch
+        st.session_state.ov_picks = []
 
     if not st.session_state.ov_generated or st.session_state.ov_df_all.empty:
         st.caption("Pick companies + dates, then click **Generate Overview**.")
@@ -100,9 +136,15 @@ def main():
 
     df_all = st.session_state.ov_df_all.copy()
 
+    # DEBUG so you can SEE if Yahoo is the one sending garbage units
+    with st.expander("Debug (check if Yahoo is feeding wrong units)"):
+        st.write("Close min:", float(df_all["Close"].min()))
+        st.write("Close max:", float(df_all["Close"].max()))
+        st.dataframe(df_all.head(10), use_container_width=True)
+
     st.subheader("Closing Price Comparison")
 
-    # IMPORTANT: keep trace order stable for click mapping
+    # keep trace order stable for click mapping
     company_order = list(df_all["Company"].unique())
 
     fig = px.line(df_all, x="Date", y="Close", color="Company", title="Closing Price", height=520)
@@ -116,7 +158,7 @@ def main():
         legend_title_text="Company",
     )
     fig.update_xaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False)
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False)
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, tickformat=".4f")
 
     clicked = plotly_events(
         fig,
@@ -182,6 +224,7 @@ def main():
 
         if p1["Company"] != p2["Company"]:
             st.warning("Pick two points on the same company line for a clean variance.")
+
 
 if __name__ == "__main__":
     main()
