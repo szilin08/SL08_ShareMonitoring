@@ -26,110 +26,43 @@ COMPETITORS = {
 }
 ALL = [BASE_NAME] + list(COMPETITORS.keys())
 
-CACHE_VERSION = 7  # bump if streamlit cloud keeps old cache
-
-
-# ---------- yfinance close extraction (robust) ----------
-def _extract_close_series(df: pd.DataFrame) -> pd.Series:
-    if df is None or df.empty:
-        return pd.Series(dtype="float64")
-
-    if "Close" in df.columns and isinstance(df["Close"], pd.Series):
-        return df["Close"]
-
-    if isinstance(df.columns, pd.MultiIndex):
-        for lvl in range(df.columns.nlevels):
-            if "Close" in df.columns.get_level_values(lvl):
-                close_df = df.xs("Close", axis=1, level=lvl)
-                if isinstance(close_df, pd.DataFrame):
-                    return close_df.iloc[:, 0]
-                return close_df
-
-        # fallback
-        close_cols = [c for c in df.columns if any(str(x).lower() == "close" for x in c)]
-        if close_cols:
-            s = df[close_cols[0]]
-            return s.iloc[:, 0] if isinstance(s, pd.DataFrame) else s
-
-    return pd.Series(dtype="float64")
-
-
-@st.cache_data(show_spinner=False)
-def fetch_close(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
-    df = yf.download(
-        tickers=ticker,
-        start=start_dt,
-        end=end_dt,
-        progress=False,
-        auto_adjust=False,
-        actions=False,
-        threads=False,
-    )
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    close = _extract_close_series(df)
-    if close is None or close.empty:
-        return pd.DataFrame()
-
-    out = close.to_frame(name="Close").reset_index()
-    if "Datetime" in out.columns and "Date" not in out.columns:
-        out = out.rename(columns={"Datetime": "Date"})
-    elif "index" in out.columns and "Date" not in out.columns:
-        out = out.rename(columns={"index": "Date"})
-
-    out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
-    out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
-    out = out.dropna(subset=["Date", "Close"])
-    return out[["Date", "Close"]]
+CACHE_VERSION = 1  # bump this if Streamlit Cloud stubbornly caches
 
 
 def ticker_for(company: str) -> str:
     return BASE_TICKER if company == BASE_NAME else COMPETITORS[company]
 
 
-# ---------- THIS is the key fix ----------
-def fix_mixed_units_per_company(df_all: pd.DataFrame) -> pd.DataFrame:
+@st.cache_data(show_spinner=False)
+def fetch_price(ticker: str, start_dt: date, end_dt: date, _v: int = CACHE_VERSION) -> pd.DataFrame:
     """
-    Fix the exact mess you're seeing:
-    some rows are in RM (0.xx), some rows come back as 700/1400 etc.
-
-    We do NOT blindly scale everything.
-    We only scale the 'insane' rows.
+    Use Ticker().history() for single ticker (no MultiIndex columns).
     """
-    if df_all.empty:
-        return df_all
+    df = yf.Ticker(ticker).history(start=start_dt, end=end_dt)
 
-    df_all = df_all.copy()
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    for comp in df_all["Company"].unique():
-        m = df_all["Company"] == comp
-        s = df_all.loc[m, "Close"].astype(float)
+    df = df.reset_index()
 
-        # If most values are "normal" (< 10) but max is huge => mixed unit issue
-        med = float(s.median())
-        mx = float(s.max())
+    # yfinance sometimes returns 'Date' or 'Datetime'
+    if "Datetime" in df.columns and "Date" not in df.columns:
+        df = df.rename(columns={"Datetime": "Date"})
 
-        if med < 10 and mx > 50:
-            # convert only the outliers
-            outlier_mask = m & (df_all["Close"] > 50)
-            df_all.loc[outlier_mask, "Close"] = df_all.loc[outlier_mask, "Close"] / 1000.0
+    if "Date" not in df.columns or "Close" not in df.columns:
+        return pd.DataFrame()
 
-        # second-tier case (sometimes it's x100)
-        s2 = df_all.loc[m, "Close"].astype(float)
-        med2 = float(s2.median())
-        mx2 = float(s2.max())
-        if med2 < 10 and mx2 > 20:
-            outlier_mask = m & (df_all["Close"] > 20)
-            df_all.loc[outlier_mask, "Close"] = df_all.loc[outlier_mask, "Close"] / 100.0
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
 
-    return df_all
+    df = df.dropna(subset=["Date", "Close"]).copy()
+    return df[["Date", "Close"]]
 
 
 def main():
     st.title("📊 Overview Dashboard")
 
-    # state (so clicks don't wipe the chart)
+    # Session state so clicks don't wipe the page
     if "ov_df_all" not in st.session_state:
         st.session_state.ov_df_all = pd.DataFrame()
     if "ov_generated" not in st.session_state:
@@ -137,7 +70,7 @@ def main():
     if "ov_picks" not in st.session_state:
         st.session_state.ov_picks = []
 
-    # unique widget keys
+    # Inputs (unique keys)
     start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="ov_start")
     end_dt = st.date_input("End date", value=date.today(), key="ov_end")
     selected = st.multiselect("Select companies", options=ALL, default=[BASE_NAME], key="ov_companies")
@@ -151,9 +84,10 @@ def main():
             return
 
         dfs = []
-        with st.spinner("Fetching historical share price..."):
+        with st.spinner("Fetching share price..."):
             for comp in selected:
-                df = fetch_close(ticker_for(comp), start_dt, end_dt + pd.Timedelta(days=1))
+                t = ticker_for(comp)
+                df = fetch_price(t, start_dt, end_dt + pd.Timedelta(days=1))
                 if df.empty:
                     continue
                 df["Company"] = comp
@@ -166,12 +100,14 @@ def main():
             st.session_state.ov_picks = []
             return
 
+        # ✅ Clean combine (NO keys=..., NO extra index columns)
         df_all = pd.concat(dfs, ignore_index=True)
+
+        # ✅ Hard clean (prevents the stupid straight-line bug)
+        df_all["Date"] = pd.to_datetime(df_all["Date"], errors="coerce")
+        df_all["Close"] = pd.to_numeric(df_all["Close"], errors="coerce")
         df_all = df_all.dropna(subset=["Date", "Close", "Company"])
         df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
-
-        # ✅ FIX the mixed unit rows (this removes the 0→1400 ramp)
-        df_all = fix_mixed_units_per_company(df_all)
 
         st.session_state.ov_df_all = df_all
         st.session_state.ov_generated = True
@@ -183,15 +119,17 @@ def main():
 
     df_all = st.session_state.ov_df_all.copy()
 
-    # quick proof (so you can see it’s fixed)
+    # If you STILL see 0→1500, this proves what's wrong immediately.
+    # Remove later if you want.
     with st.expander("Debug"):
         st.write("Close min:", float(df_all["Close"].min()))
         st.write("Close max:", float(df_all["Close"].max()))
-        st.write("Any Close > 20 still present?", bool((df_all["Close"] > 20).any()))
-        st.dataframe(df_all.tail(10), use_container_width=True)
+        st.dataframe(df_all.head(8), use_container_width=True)
+        st.dataframe(df_all.tail(8), use_container_width=True)
 
     st.subheader("Closing Price Comparison")
 
+    # Keep trace order stable for click mapping
     company_order = list(df_all["Company"].unique())
 
     fig = px.line(df_all, x="Date", y="Close", color="Company", title="Closing Price", height=520)
@@ -204,8 +142,8 @@ def main():
         margin=dict(l=10, r=10, t=50, b=10),
         legend_title_text="Company",
     )
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False)
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, tickformat=".4f")
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, title="Date")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zeroline=False, title="Close", tickformat=".4f")
 
     clicked = plotly_events(
         fig,
@@ -216,6 +154,7 @@ def main():
         override_height=520,
     )
 
+    # Record picks
     if clicked:
         c = clicked[0]
         curve = c.get("curveNumber")
