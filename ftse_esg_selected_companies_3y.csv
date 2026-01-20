@@ -1,7 +1,31 @@
 ﻿Year,StockCode,Company,Sector,FTSE4Good_Index,FTSE4Good_Shariah,ESG_Stars,ESG_Stars_Change_YoY,ESG_Stars_Change_3Y
-2023,5148,UEM SUNRISE BERHAD PROPERTY,Uem Sunrise Berhad Property,True,True,4,,
-2023,5398,GAMUDA BHD CONSTRUCTION,Gamuda Bhd Construction,False,False,2,,
-2023,5789,LBS BINA GROUP BHD PROPERTY,Lbs Bina Group Bhd Property,True,True,3,,
-2023,8206,ECO WORLD DEVELOPMENT GROUP BERHAD PROPERTY,Eco World Development Group Berhad Property,True,True,3,,
-2023,8583,MAH SING GROUP BHD PROPERTY,Mah Sing Group Bhd Property,True,True,4,,
-2023,8664,SP SETIA BHD PROPERTY,Sp Setia Bhd Property,True,True,3,,
+2024,3336,IJM,Corporation Bhd Construction ,FALSE,FALSE,3,,0
+2025,3336,IJM,Corporation Bhd Construction ,TRUE,TRUE,3,0,0
+2024,5053,OSK,Holdings Bhd Property ,FALSE,FALSE,2,,1
+2025,5053,OSK,Holdings Bhd Property ,TRUE,FALSE,3,1,1
+2023,5148,UEM,Sunrise Berhad Property Yes Yes ,FALSE,FALSE,4,,0
+2024,5148,UEM,Sunrise Berhad Property Yes Yes ,FALSE,FALSE,3,-1,0
+2025,5148,UEM,Sunrise Berhad Property ,TRUE,TRUE,4,1,0
+2024,5200,UOA,Development Berhad Property ,FALSE,FALSE,3,,0
+2025,5200,UOA,Development Berhad Property ,FALSE,FALSE,3,0,0
+2024,5211,SUNWAY,Berhad Industrial Products & Services Yes Yes ,FALSE,FALSE,4,,0
+2025,5211,SUNWAY,Berhad Industrial Products & Services ,TRUE,TRUE,4,0,0
+2024,5249,IOI,Properties Group Berhad Property ,FALSE,FALSE,4,,0
+2025,5249,IOI,Properties Group Berhad Property ,TRUE,TRUE,4,0,0
+2024,5288,SIME,Darby Property Berhad Property ,FALSE,FALSE,3,,0
+2025,5288,SIME,Darby Property Berhad Property ,TRUE,TRUE,3,0,0
+2023,5398,GAMUDA,Bhd Construction ,FALSE,FALSE,2,,1
+2024,5398,GAMUDA,Bhd Construction Yes Yes ,FALSE,FALSE,3,1,1
+2025,5398,GAMUDA,Bhd Construction ,TRUE,TRUE,3,0,1
+2023,5789,LBS,Bina Group Bhd Property Yes Yes ,FALSE,FALSE,3,,1
+2024,5789,LBS,Bina Group Bhd Property Yes Yes ,FALSE,FALSE,3,0,1
+2025,5789,LBS,Bina Group Bhd Property ,TRUE,TRUE,4,1,1
+2023,8206,ECO,World Development Group Berhad Property Yes Yes ,FALSE,FALSE,3,,1
+2024,8206,ECO,World Development Group Berhad Property Yes Yes ,FALSE,FALSE,3,0,1
+2025,8206,ECO,World Development Group Berhad Property ,TRUE,TRUE,4,1,1
+2023,8583,MAH,Sing Group Bhd Property Yes Yes ,FALSE,FALSE,4,,0
+2024,8583,MAH,Sing Group Bhd Property Yes Yes ,FALSE,FALSE,4,0,0
+2025,8583,MAH,Sing Group Bhd Property ,TRUE,TRUE,4,0,0
+2023,8664,SP,Setia Bhd Property Yes Yes ,FALSE,FALSE,3,,0
+2024,8664,SP,Setia Bhd Property Yes Yes ,FALSE,FALSE,3,0,0
+2025,8664,SP,Setia Bhd Property ,TRUE,TRUE,3,0,0
