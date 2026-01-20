@@ -256,42 +256,96 @@ def revenue_patmi_chart(selected_companies, start_dt, end_dt):
 def main():
     st.title("📊 Overview Dashboard")
 
-    # Sidebar-like controls in main (keep it simple)
-    start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="overview_start")
-    end_dt = st.date_input("End date", value=date.today(), key="overview_end")
+    # -------------------------
+    # Persistent state (so clicks don't "reset")
+    # -------------------------
+    if "overview_generated" not in st.session_state:
+        st.session_state.overview_generated = False
+
+    if "overview_df_all" not in st.session_state:
+        st.session_state.overview_df_all = pd.DataFrame()
+
+    if "overview_selected_companies" not in st.session_state:
+        st.session_state.overview_selected_companies = [BASE_COMPANY_NAME]
+
+    if "overview_start_dt" not in st.session_state:
+        st.session_state.overview_start_dt = date(2020, 1, 1)
+
+    if "overview_end_dt" not in st.session_state:
+        st.session_state.overview_end_dt = date.today()
+
+    # -------------------------
+    # Inputs (use session_state defaults)
+    # -------------------------
+    start_dt = st.date_input(
+        "Start date",
+        value=st.session_state.overview_start_dt,
+        key="overview_start",
+    )
+    end_dt = st.date_input(
+        "End date",
+        value=st.session_state.overview_end_dt,
+        key="overview_end",
+    )
 
     selected_companies = st.multiselect(
         "Select companies",
         options=ALL_COMPANIES,
-        default=[BASE_COMPANY_NAME],
+        default=st.session_state.overview_selected_companies,
+        key="overview_companies",
     )
 
+    # Persist latest selections
+    st.session_state.overview_start_dt = start_dt
+    st.session_state.overview_end_dt = end_dt
+    st.session_state.overview_selected_companies = selected_companies
+
+    # -------------------------
+    # Generate button: ONLY fetch + store data
+    # -------------------------
     if st.button("Generate Overview", type="primary"):
         if not selected_companies:
             st.warning("Pick at least one company.")
-            return
-
-        if start_dt >= end_dt:
+            st.session_state.overview_generated = False
+            st.session_state.overview_df_all = pd.DataFrame()
+        elif start_dt >= end_dt:
             st.warning("Start date must be earlier than end date.")
-            return
+            st.session_state.overview_generated = False
+            st.session_state.overview_df_all = pd.DataFrame()
+        else:
+            dfs = []
+            with st.spinner("Fetching price data..."):
+                for comp in selected_companies:
+                    ticker = _ticker_for_company(comp)
+                    df = fetch_history(ticker, start_dt, end_dt + pd.Timedelta(days=1))
+                    if df.empty:
+                        continue
+                    df["Company"] = comp
+                    dfs.append(df)
 
-        # Fetch all selected companies
-        dfs = []
-        with st.spinner("Fetching price data..."):
-            for comp in selected_companies:
-                ticker = _ticker_for_company(comp)
-                # add +1 day so end date included
-                df = fetch_history(ticker, start_dt, end_dt + pd.Timedelta(days=1))
-                if df.empty:
-                    continue
-                df["Company"] = comp
-                dfs.append(df)
+            if not dfs:
+                st.warning("No stock data fetched. Check tickers, date range, or Yahoo availability.")
+                st.session_state.overview_generated = False
+                st.session_state.overview_df_all = pd.DataFrame()
+            else:
+                st.session_state.overview_df_all = pd.concat(dfs, ignore_index=True)
+                st.session_state.overview_generated = True
 
-        if not dfs:
-            st.warning("No stock data fetched. Check tickers, date range, or Yahoo availability.")
-            return
+                # Optional: reset picks every time you regenerate
+                st.session_state.picked_points_close = []
 
-        df_all = pd.concat(dfs, ignore_index=True)
+        st.rerun()
+
+    # -------------------------
+    # Render charts OUTSIDE the button (so reruns still show it)
+    # -------------------------
+    if st.session_state.overview_generated and not st.session_state.overview_df_all.empty:
+        df_all = st.session_state.overview_df_all.copy()
+
+        # IMPORTANT: make company ordering stable (prevents curve mismatch)
+        company_order = sorted(df_all["Company"].dropna().unique().tolist())
+        df_all["Company"] = pd.Categorical(df_all["Company"], categories=company_order, ordered=True)
+        df_all = df_all.sort_values(["Company", "Date"]).reset_index(drop=True)
 
         # 1) Closing price chart with point diff
         closing_price_chart_with_picks(df_all)
@@ -302,6 +356,9 @@ def main():
         # 3) Sales placeholder
         st.subheader("🎯 Sales Target vs Actual (Placeholder)")
         st.info("This requires additional data (annual reports / sales target dataset).")
+    else:
+        st.caption("Select companies + dates, then click **Generate Overview**.")
+
 
 
 
