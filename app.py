@@ -19,8 +19,9 @@ with tabs[4]:
     cash_flow.main()
 with tabs[5]:
     dividend.main()
-with tabs[6]:
-    esg.main()
+#with tabs[6]:
+#    esg.main()
+
 
 
 
