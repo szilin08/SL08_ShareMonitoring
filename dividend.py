@@ -71,10 +71,9 @@ def build_dividend_dataset(selected_companies: list[str], start_dt: date, end_dt
     all_df = all_df.sort_values(["Company", "Date"])
     return all_df
 
-def annual_dividend_and_growth(df: pd.DataFrame) -> pd.DataFrame:
+def annual_dividend_with_growth(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Returns annual dividend sum + YoY growth per company.
-    Columns: Company, Ticker, Year, AnnualDividend, YoY_Growth
+    Columns: Company, Ticker, Year, AnnualDividend, YoY_Growth (decimal, e.g. 0.12 = 12%)
     """
     if df.empty:
         return pd.DataFrame(columns=["Company", "Ticker", "Year", "AnnualDividend", "YoY_Growth"])
@@ -141,36 +140,35 @@ def main():
         fig.update_layout(xaxis_title="Date", yaxis_title="Dividend (per share)")
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- Annual dividends + YoY growth ---
-        annual = annual_dividend_and_growth(df)
+        # --- Annual dividends line chart with YoY growth in hover ---
+        annual = annual_dividend_with_growth(df)
 
-        st.subheader("📊 Annual Dividends")
+        st.subheader("📊 Annual Dividends (YoY Growth in Hover)")
         ann_fig = px.line(
             annual,
             x="Year",
             y="AnnualDividend",
             color="Company",
             markers=True,
-            title="Annual Dividend per Share (Sum of events in each year)",
+            title="Annual Dividend per Share",
+            custom_data=["YoY_Growth"],
         )
+
+        # Custom hover: show YoY% nicely, handle N/A (first year)
+        ann_fig.update_traces(
+            hovertemplate=(
+                "<b>%{fullData.name}</b><br>"
+                "Year: %{x}<br>"
+                "Annual Dividend: %{y:.4f}<br>"
+                "YoY Growth: %{customdata[0]:+.1%}<br>"
+                "<extra></extra>"
+            )
+        )
+
         ann_fig.update_layout(xaxis_title="Year", yaxis_title="Annual Dividend (per share)")
         st.plotly_chart(ann_fig, use_container_width=True)
 
-        st.subheader("📉 YoY Dividend Growth")
-        growth_df = annual.dropna(subset=["YoY_Growth"]).copy()
-        if growth_df.empty:
-            st.info("Not enough years of dividend history in the selected range to compute YoY growth.")
-        else:
-            growth_fig = px.bar(
-                growth_df,
-                x="Year",
-                y="YoY_Growth",
-                color="Company",
-                barmode="group",
-                title="Year-over-Year Growth (Annual Dividend)",
-            )
-            growth_fig.update_layout(xaxis_title="Year", yaxis_title="YoY Growth")
-            st.plotly_chart(growth_fig, use_container_width=True)
+        st.caption("Tip: First year per company will show YoY as blank/NaN since there’s no prior year to compare.")
 
         # --- Table of events ---
         st.subheader("🧾 Dividend Event Table")
