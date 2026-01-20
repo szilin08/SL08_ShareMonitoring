@@ -1,8 +1,8 @@
 # overview.py
-# ───────────────────────────────────────────────────────────────
-# Malaysian Property Stocks Closing Price Comparison
-# Standalone Streamlit page – do NOT call via overview.main()
-# ───────────────────────────────────────────────────────────────
+"""
+Malaysian Property Stocks - Closing Price Comparison
+Standalone Streamlit page for LBS Bina and competitors
+"""
 
 import streamlit as st
 import pandas as pd
@@ -10,41 +10,45 @@ import yfinance as yf
 import plotly.express as px
 from datetime import date, timedelta
 
-st.set_page_config(page_title="Property Stocks Overview", layout="wide")
+st.set_page_config(page_title="Property Stocks Comparison", layout="wide")
 
-# ─── Configuration ───────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# CONFIG
+# ────────────────────────────────────────────────
 
-BASE_NAME   = "LBS Bina"
-BASE_TICKER = "5789.KL"
+BASE_COMPANY = "LBS Bina"
+BASE_TICKER  = "5789.KL"
 
 COMPETITORS = {
-    "S P Setia"         : "8664.KL",
+    "S P Setia": "8664.KL",
     "Sime Darby Property": "5288.KL",
-    "Eco World"         : "8206.KL",
-    "UEM Sunrise"       : "5148.KL",
-    "IOI Properties"    : "5249.KL",
-    "Mah Sing"          : "8583.KL",
-    "IJM Corporation"   : "3336.KL",
-    "Sunway"            : "5211.KL",
-    "Gamuda"            : "5398.KL",
-    "OSK Holdings"      : "5053.KL",
-    "UOA Development"   : "5200.KL",
+    "Eco World": "8206.KL",
+    "UEM Sunrise": "5148.KL",
+    "IOI Properties": "5249.KL",
+    "Mah Sing": "8583.KL",
+    "IJM Corporation": "3336.KL",
+    "Sunway": "5211.KL",
+    "Gamuda": "5398.KL",
+    "OSK Holdings": "5053.KL",
+    "UOA Development": "5200.KL",
 }
 
-ALL_COMPANIES = [BASE_NAME] + list(COMPETITORS.keys())
+ALL_COMPANIES = [BASE_COMPANY] + list(COMPETITORS.keys())
 
-CACHE_VERSION = 3               # bump → forces cache refresh
-MIN_PRICE     = 0.05
-MAX_PRICE     = 20.0            # generous upper bound for Malaysian property stocks
+CACHE_VERSION = 4           # increase this number to force cache refresh
+MIN_PRICE_MYR = 0.05
+MAX_PRICE_MYR = 20.0
 
-# ─── Helpers ─────────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# DATA FETCHING
+# ────────────────────────────────────────────────
 
-@st.cache_data(ttl="6h", show_spinner=False)
-def get_closing_prices(
+@st.cache_data(ttl="12h", show_spinner=False)
+def download_prices(
     ticker: str,
     start: date,
     end: date,
-    _version: int = CACHE_VERSION
+    version: int = CACHE_VERSION
 ) -> pd.DataFrame:
     try:
         df = yf.download(
@@ -53,18 +57,20 @@ def get_closing_prices(
             end=end + timedelta(days=1),
             progress=False,
             auto_adjust=True,
-            actions=False
+            actions=False,
+            repair=True
         )
+
         if df.empty:
             return pd.DataFrame()
 
-        df = df[["Close"]].reset_index()
-        df["Date"]  = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+        df = df[["Close"]].reset_index(names="Date")
+        df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
         df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
-        df = df.dropna().rename(columns={"Close": "Close"})
 
-        # Filter obviously wrong prices (KLSE property stocks are cheap)
-        df = df[df["Close"].between(MIN_PRICE, MAX_PRICE)]
+        # Remove nonsense prices (Malaysian property stocks rarely go above ~10–15 MYR)
+        df = df[df["Close"].between(MIN_PRICE_MYR, MAX_PRICE_MYR)]
+        df = df.dropna(subset=["Date", "Close"])
 
         return df[["Date", "Close"]]
 
@@ -72,20 +78,21 @@ def get_closing_prices(
         return pd.DataFrame()
 
 
-def create_price_chart(df: pd.DataFrame) -> px.line:
+def build_figure(df: pd.DataFrame) -> px.line:
     fig = px.line(
         df,
         x="Date",
         y="Close",
         color="Company",
-        title="Closing Price Comparison (MYR)",
-        height=600,
+        title="Closing Price Comparison – Malaysian Property Stocks (MYR)",
+        height=620,
         template="plotly_dark"
     )
 
     fig.update_traces(
-        mode="lines",
-        line_width=2.3,
+        mode="lines+markers",
+        line=dict(width=2.4),
+        marker=dict(size=4, opacity=0.6),
         hovertemplate="%{y:.3f} MYR<extra></extra>"
     )
 
@@ -93,20 +100,30 @@ def create_price_chart(df: pd.DataFrame) -> px.line:
         hovermode="x unified",
         paper_bgcolor="#0e1117",
         plot_bgcolor="#0e1117",
-        margin=dict(l=30, r=30, t=70, b=30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=40, t=90, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.04,
+            xanchor="center",
+            x=0.5,
+            bgcolor="rgba(0,0,0,0.3)",
+            bordercolor="rgba(255,255,255,0.15)",
+            borderwidth=1
+        ),
+        font=dict(size=13)
     )
 
     fig.update_xaxes(
         title="Date",
-        gridcolor="rgba(200,200,200,0.08)",
+        gridcolor="rgba(180,180,180,0.08)",
         zeroline=False
     )
 
     fig.update_yaxes(
-        title="Price (MYR)",
+        title="Closing Price (MYR)",
         tickformat=".3f",
-        gridcolor="rgba(200,200,200,0.08)",
+        gridcolor="rgba(180,180,180,0.08)",
         zeroline=False,
         range=[0, None],
         rangemode="tozero"
@@ -114,168 +131,167 @@ def create_price_chart(df: pd.DataFrame) -> px.line:
 
     return fig
 
-# ─── Main UI ─────────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# SESSION STATE
+# ────────────────────────────────────────────────
 
-st.title("📈 Malaysian Property Stocks — Price Overview")
+if "price_data" not in st.session_state:
+    st.session_state.price_data = pd.DataFrame()
+if "data_loaded" not in st.session_state:
+    st.session_state.data_loaded = False
+if "selected_points" not in st.session_state:
+    st.session_state.selected_points = []
 
-# Session state
-if "df_prices" not in st.session_state:
-    st.session_state.df_prices = pd.DataFrame()
-if "generated" not in st.session_state:
-    st.session_state.generated = False
-if "picked_points" not in st.session_state:
-    st.session_state.picked_points = []
+# ────────────────────────────────────────────────
+# UI
+# ────────────────────────────────────────────────
 
-# Inputs ────────────────────────────────────────────────────────
+st.title("🏠 Malaysian Property Developers – Share Price Comparison")
 
-c1, c2 = st.columns([1,1])
+col_start, col_end = st.columns(2)
 
-with c1:
+with col_start:
     start_date = st.date_input(
         "Start date",
         value=date(2020, 1, 1),
         min_value=date(2015, 1, 1),
-        key="start_date"
+        key="start"
     )
 
-with c2:
+with col_end:
     end_date = st.date_input(
         "End date",
         value=date.today(),
-        key="end_date"
+        key="end"
     )
 
-companies = st.multiselect(
-    "Companies to compare",
+selected = st.multiselect(
+    "Select companies",
     options=ALL_COMPANIES,
-    default=[BASE_NAME],
+    default=[BASE_COMPANY],
     key="companies"
 )
 
-# Generate button
-if st.button("Load & Compare Prices", type="primary", use_container_width=True):
+if st.button("Generate Price Comparison", type="primary", use_container_width=True):
 
-    if not companies:
-        st.error("Select at least one company.")
-        st.stop()
-
-    if start_date >= end_date:
+    if not selected:
+        st.error("Please select at least one company.")
+    elif start_date >= end_date:
         st.error("Start date must be before end date.")
-        st.stop()
+    else:
+        with st.spinner("Fetching data from Yahoo Finance..."):
+            frames = []
 
-    with st.spinner("Downloading prices from Yahoo Finance…"):
-        frames = []
+            for name in selected:
+                ticker = BASE_TICKER if name == BASE_COMPANY else COMPETITORS[name]
+                df = download_prices(ticker, start_date, end_date)
+                if not df.empty:
+                    df["Company"] = name
+                    frames.append(df)
 
-        for company in companies:
-            ticker = BASE_TICKER if company == BASE_NAME else COMPETITORS[company]
-            df = get_closing_prices(ticker, start_date, end_date)
-            if not df.empty:
-                df["Company"] = company
-                frames.append(df)
+            if not frames:
+                st.error("No valid price data could be retrieved.")
+                st.session_state.data_loaded = False
+            else:
+                all_data = pd.concat(frames, ignore_index=True)
+                all_data = all_data.sort_values(["Company", "Date"]).reset_index(drop=True)
 
-        if not frames:
-            st.error("No valid data returned. Try a different date range or fewer companies.")
-            st.session_state.generated = False
-            st.session_state.df_prices = pd.DataFrame()
-        else:
-            combined = pd.concat(frames, ignore_index=True)
-            combined = combined[["Date", "Close", "Company"]]
-            combined = combined.sort_values(["Company", "Date"]).reset_index(drop=True)
+                # Show quick validation
+                if not all_data.empty:
+                    pmin = all_data["Close"].min()
+                    pmax = all_data["Close"].max()
+                    st.caption(f"Loaded {len(all_data):,} rows • Prices: {pmin:.3f} – {pmax:.3f} MYR")
 
-            # Debug line (visible once)
-            min_p = combined["Close"].min()
-            max_p = combined["Close"].max()
-            st.caption(f"Loaded {len(combined):,} data points  •  Price range: {min_p:.3f} – {max_p:.3f} MYR")
+                st.session_state.price_data = all_data
+                st.session_state.data_loaded = True
+                st.session_state.selected_points = []  # reset picks
 
-            st.session_state.df_prices   = combined
-            st.session_state.generated   = True
-            st.session_state.picked_points = []   # reset picks
+# ────────────────────────────────────────────────
+# CHART + INTERACTION
+# ────────────────────────────────────────────────
 
-# ─── Chart & Interaction ─────────────────────────────────────────
+if st.session_state.data_loaded and not st.session_state.price_data.empty:
 
-if st.session_state.generated and not st.session_state.df_prices.empty:
+    df = st.session_state.price_data
 
-    df = st.session_state.df_prices
+    st.subheader("Closing Prices")
 
-    st.subheader("Closing Price Comparison")
+    companies_sorted = sorted(df["Company"].unique())
 
-    # Keep legend / curve order stable
-    company_list = sorted(df["Company"].unique())
-
-    fig = create_price_chart(df)
+    fig = build_figure(df)
 
     from streamlit_plotly_events import plotly_events
 
-    selected_points = plotly_events(
+    clicks = plotly_events(
         fig,
         click_event=True,
-        key="price_click_events",
-        override_height=600
+        select_event=False,
+        hover_event=False,
+        key="price_click",
+        override_height=620
     )
 
-    # Process click
-    if selected_points:
-        pt = selected_points[0]
-        curve = pt.get("curveNumber")
-        idx   = pt.get("pointIndex")
+    if clicks:
+        click = clicks[0]
+        curve_number = click.get("curveNumber")
+        point_number = click.get("pointIndex")
 
-        if curve is not None and idx is not None and 0 <= curve < len(company_list):
-            comp = company_list[curve]
-            df_one = df[df["Company"] == comp].reset_index(drop=True)
+        if curve_number is not None and point_number is not None:
+            company = companies_sorted[curve_number]
+            df_single = df[df["Company"] == company].reset_index(drop=True)
 
-            if 0 <= idx < len(df_one):
-                row = df_one.iloc[idx]
-                pick = {
-                    "Company": comp,
-                    "Date"   : pd.to_datetime(row["Date"]),
-                    "Price"  : float(row["Close"])
+            if 0 <= point_number < len(df_single):
+                row = df_single.iloc[point_number]
+                point_data = {
+                    "Company": company,
+                    "Date": pd.to_datetime(row["Date"]),
+                    "Close": float(row["Close"])
                 }
-                st.session_state.picked_points.append(pick)
-                st.session_state.picked_points = st.session_state.picked_points[-2:]
+                st.session_state.selected_points.append(point_data)
+                st.session_state.selected_points = st.session_state.selected_points[-2:]
 
-    picks = st.session_state.picked_points
+    picks = st.session_state.selected_points
 
-    colA, colB, colC = st.columns([1, 1, 0.6])
+    c1, c2, c3 = st.columns([1, 1, 0.6])
 
-    with colA:
-        st.markdown("**Point 1**")
+    with c1:
+        st.markdown("**Pick #1**")
         if len(picks) >= 1:
             p = picks[0]
             st.caption(p["Company"])
-            st.write(f"{p['Date'].date()} • **{p['Price']:.3f}** MYR")
+            st.markdown(f"{p['Date'].date()} • **{p['Close']:.3f}** MYR")
         else:
-            st.caption("← click any point")
+            st.caption("Click a point on the chart")
 
-    with colB:
-        st.markdown("**Point 2**")
+    with c2:
+        st.markdown("**Pick #2**")
         if len(picks) >= 2:
             p = picks[1]
             st.caption(p["Company"])
-            st.write(f"{p['Date'].date()} • **{p['Price']:.3f}** MYR")
+            st.markdown(f"{p['Date'].date()} • **{p['Close']:.3f}** MYR")
         else:
-            st.caption("← click second point")
+            st.caption("Click a second point")
 
-    with colC:
-        if st.button("Clear picks"):
-            st.session_state.picked_points = []
+    with c3:
+        if st.button("Reset picks"):
+            st.session_state.selected_points = []
             st.rerun()
 
-    # Show difference
     if len(picks) == 2:
-        a, b = picks
-        if a["Company"] == b["Company"]:
-            change    = b["Price"] - a["Price"]
-            pct       = change / a["Price"] * 100 if a["Price"] else 0
-            day_count = (b["Date"] - a["Date"]).days
+        p1, p2 = picks
+        st.markdown("### Difference")
+        if p1["Company"] == p2["Company"]:
+            delta = p2["Close"] - p1["Close"]
+            pct_change = (delta / p1["Close"] * 100) if p1["Close"] != 0 else 0
+            days_diff = (p2["Date"] - p1["Date"]).days
 
-            st.markdown("#### Change between picks")
-            st.write(f"**Δ Price**   : {change:+.3f} MYR")
-            st.write(f"**% Change**  : {pct:+.2f}%")
-            st.write(f"**Days**      : {day_count}")
+            st.write(f"**Price change**: {delta:+.3f} MYR")
+            st.write(f"**Percentage change**: {pct_change:+.2f}%")
+            st.write(f"**Days between**: {days_diff}")
         else:
-            st.info("For % change calculation pick two points on the **same line**.")
+            st.info("Select two points on the **same company** to calculate percentage change.")
 
 else:
-    st.info("Choose companies and date range → click **Load & Compare Prices**")
+    st.info("Select companies and date range, then click **Generate Price Comparison**.")
 
-st.caption("• Data: Yahoo Finance  •  Prices in MYR  •  For informational use only")
+st.caption("Data source: Yahoo Finance • Prices in MYR • Educational use only • Not financial advice")
