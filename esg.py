@@ -91,33 +91,33 @@ def main():
     st.divider()
 
     # -----------------------
-    # 1) SIDE-BY-SIDE BAR CHART (ORDERED BY LATEST YEAR, ASC)
+    # 1) BAR CHART – LATEST YEAR ONLY (DESC ORDER)
     # -----------------------
     latest_year = dsel["Year"].max()
 
-    st.subheader(f"📊 ESG Stars by Year (Ordered by {latest_year})")
+    st.subheader(f"📊 ESG Stars ({latest_year}) – Highest to Lowest")
 
-    # Order companies by latest year ESG stars (ascending)
-    order_df = (
+    latest_df = (
         dsel[dsel["Year"] == latest_year]
-        .sort_values("ESG_Stars", ascending=True)
+        .groupby("Label", as_index=False)["ESG_Stars"]
+        .max()
+        .sort_values("ESG_Stars", ascending=False)
     )
-    company_order = order_df["Label"].tolist()
 
     bar_fig = px.bar(
-        dsel,
+        latest_df,
         x="Label",
         y="ESG_Stars",
-        color="Year",
-        barmode="group",
-        category_orders={"Label": company_order},
-        title=f"ESG Stars Comparison Across Years (Ordered by {latest_year})",
+        title=f"ESG Stars Ranking ({latest_year})",
     )
+
     bar_fig.update_layout(
         xaxis_title="",
         yaxis_title="ESG Stars",
-        legend_title="Year",
     )
+
+    bar_fig.update_xaxes(tickangle=-30)
+
     st.plotly_chart(bar_fig, use_container_width=True)
 
     # -----------------------
