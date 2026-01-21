@@ -5,7 +5,7 @@ import yfinance as yf
 from datetime import date
 import plotly.express as px
 
-# --- Yahoo Finance user-agent workaround (helps reduce empty/blocked responses) ---
+# --- Yahoo Finance User-Agent Fix ---
 try:
     yf.utils.get_user_agent = lambda: (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -16,7 +16,11 @@ except Exception:
 
 st.set_page_config(page_title="Overview – Competitor Monitoring", layout="wide")
 
-# --- Competitors list ---
+# --- Base Company ---
+BASE_COMPANY = "LBS Bina"
+BASE_TICKER = "5789.KL"
+
+# --- Competitors ---
 COMPETITORS = {
     "S P Setia": "8664.KL",
     "Sime Darby Property": "5288.KL",
@@ -31,131 +35,99 @@ COMPETITORS = {
     "UOA Development": "5200.KL",
 }
 
-# --- Data fetch ---
-@st.cache_data(ttl=60 * 30, show_spinner=False)  # cache for 30 mins
-def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.DataFrame:
-    """
-    Returns a wide dataframe: index=Date, columns=ticker, values=Close
-    end_dt is inclusive in UI, but yfinance end is exclusive, so add 1 day.
-    """
+# --- Data Fetch ---
+@st.cache_data(ttl=60 * 30)
+def fetch_close_prices(tickers, start_dt, end_dt):
     start = pd.to_datetime(start_dt)
-    end_exclusive = pd.to_datetime(end_dt) + pd.Timedelta(days=1)
+    end = pd.to_datetime(end_dt) + pd.Timedelta(days=1)
 
-    # Use yf.download for multi-ticker (faster + more stable)
     data = yf.download(
         tickers=tickers,
         start=start,
-        end=end_exclusive,
+        end=end,
         progress=False,
-        auto_adjust=False,
-        group_by="column",
         threads=True,
     )
 
-    if data is None or data.empty:
+    if data.empty:
         return pd.DataFrame()
 
-    # If multiple tickers -> columns are MultiIndex (field, ticker)
-    # If single ticker -> columns are single-level
     if isinstance(data.columns, pd.MultiIndex):
-        close = data["Close"].copy()
+        close = data["Close"]
     else:
-        close = data[["Close"]].copy()
+        close = data[["Close"]]
         close.columns = [tickers[0]]
 
-    close.index = pd.to_datetime(close.index).date
-    close = close.sort_index()
+    close.index = pd.to_datetime(close.index)
     return close
 
-def normalize_base_100(close_wide: pd.DataFrame) -> pd.DataFrame:
-    """Normalize each series so first valid value = 100."""
-    norm = close_wide.copy()
-    for c in norm.columns:
-        first_valid = norm[c].dropna().iloc[0] if not norm[c].dropna().empty else None
-        if first_valid and first_valid != 0:
-            norm[c] = (norm[c] / first_valid) * 100
-    return norm
-
+# --- App ---
 def main():
-    st.title("📈 Overview – Competitor Closing Price Comparison")
+    st.title("📈 LBS Bina vs Competitors – Closing Price Comparison")
 
-    # --- Sidebar controls ---
-    with st.sidebar:
-        st.header("Filters")
+    # --- Filters (MAIN PAGE) ---
+    col1, col2, col3 = st.columns([1, 1, 2])
 
-        start_dt = st.date_input("Start date", value=date(2020, 1, 1), key="overview_start")
-        end_dt = st.date_input("End date", value=date.today(), key="overview_end")
-
-        if start_dt > end_dt:
-            st.error("Start date must be before end date.")
-            st.stop()
-
-        selected = st.multiselect(
-            "Select competitors",
+    with col1:
+        start_date = st.date_input("Start Date", value=date(2020, 1, 1))
+    with col2:
+        end_date = st.date_input("End Date", value=date.today())
+    with col3:
+        selected_competitors = st.multiselect(
+            "Select Competitors",
             options=list(COMPETITORS.keys()),
             default=["S P Setia", "Sime Darby Property", "Eco World"],
         )
 
-        normalize = st.toggle("Normalize (Base = 100)", value=True, help="Makes different price levels comparable.")
-        show_range = st.checkbox("Show range slider", value=True)
-
-        run = st.button("Get Data", use_container_width=True)
-
-    if not run:
-        st.info("Pick competitors + dates, then click **Get Data**.")
+    if start_date > end_date:
+        st.error("Start date must be before end date.")
         return
 
-    if not selected:
-        st.warning("Select at least 1 competitor.")
+    if not selected_competitors:
+        st.warning("Select at least one competitor.")
         return
 
-    tickers = [COMPETITORS[name] for name in selected]
+    # --- Fetch Data ---
+    tickers = [BASE_TICKER] + [COMPETITORS[c] for c in selected_competitors]
 
-    with st.spinner("Fetching prices..."):
-        close_wide = fetch_close_prices(tickers, start_dt, end_dt)
+    with st.spinner("Fetching stock prices..."):
+        df_close = fetch_close_prices(tickers, start_date, end_date)
 
-    if close_wide.empty:
-        st.error("No data returned. Try a shorter range, or different tickers.")
+    if df_close.empty:
+        st.error("No data returned. Try adjusting date range.")
         return
 
-    # Map ticker -> company name for display
-    ticker_to_name = {v: k for k, v in COMPETITORS.items()}
+    # Rename tickers → company names
+    rename_map = {BASE_TICKER: BASE_COMPANY}
+    rename_map.update({v: k for k, v in COMPETITORS.items()})
+    df_close = df_close.rename(columns=rename_map)
 
-    close_wide = close_wide.rename(columns=ticker_to_name)
-
-    if normalize:
-        plot_wide = normalize_base_100(close_wide)
-        y_label = "Indexed Close (Base = 100)"
-        title = "Closing Price Comparison (Normalized)"
-    else:
-        plot_wide = close_wide
-        y_label = "Close (MYR)"
-        title = "Closing Price Comparison"
-
-    # Convert to long for plotly express
+    # Long format for Plotly
     df_long = (
-        plot_wide.reset_index(names="Date")
+        df_close.reset_index()
         .melt(id_vars="Date", var_name="Company", value_name="Close")
         .dropna()
     )
 
+    # --- Chart ---
     fig = px.line(
         df_long,
         x="Date",
         y="Close",
         color="Company",
-        title=title,
+        title="Closing Price Comparison (LBS Bina as Baseline)",
     )
+
     fig.update_layout(
-        yaxis_title=y_label,
         xaxis_title="Date",
+        yaxis_title="Closing Price (MYR)",
         legend_title="Company",
         margin=dict(l=10, r=10, t=60, b=10),
     )
-    if show_range:
-        fig.update_xaxes(rangeslider_visible=True)
+
+    fig.update_xaxes(rangeslider_visible=True)
 
     st.plotly_chart(fig, use_container_width=True)
 
-
-
+if __name__ == "__main__":
+    main()
