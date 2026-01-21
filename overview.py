@@ -45,11 +45,11 @@ except Exception:
 @st.cache_data(ttl=60 * 30, show_spinner=False)
 def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.DataFrame:
     """
-    Returns a wide dataframe:
+    Returns wide df:
       index = DatetimeIndex
       columns = tickers
       values = Close
-    end_dt is inclusive in UI; yfinance end is exclusive => +1 day
+    end_dt inclusive in UI; yfinance 'end' exclusive => +1 day
     """
     start = pd.to_datetime(start_dt)
     end_exclusive = pd.to_datetime(end_dt) + pd.Timedelta(days=1)
@@ -67,12 +67,13 @@ def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.D
     if data is None or data.empty:
         return pd.DataFrame()
 
-    # MultiIndex (field, ticker) when multiple tickers; otherwise flat columns
     if isinstance(data.columns, pd.MultiIndex):
+        # (field, ticker)
         if "Close" not in data.columns.get_level_values(0):
             return pd.DataFrame()
         close = data["Close"].copy()
     else:
+        # single ticker
         if "Close" not in data.columns:
             return pd.DataFrame()
         close = data[["Close"]].copy()
@@ -85,10 +86,9 @@ def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.D
 
 def compute_perf_table(close_wide: pd.DataFrame) -> pd.DataFrame:
     """
-    Start vs End + Peak for each company in the selected period.
+    Start vs End + Peak for each company.
     """
     rows = []
-
     for company in close_wide.columns:
         s = close_wide[company].dropna()
         if s.empty:
@@ -123,29 +123,26 @@ def compute_perf_table(close_wide: pd.DataFrame) -> pd.DataFrame:
         })
 
     df = pd.DataFrame(rows)
-
-    # Sort by % diff desc (NaNs at bottom)
     df["_sort"] = df["% Diff"].fillna(-10**18)
     df = df.sort_values("_sort", ascending=False).drop(columns="_sort")
-
     return df
 
 
-def enforce_base_selected(selected: list[str]) -> list[str]:
+def enforce_base_first(selected: list[str]) -> list[str]:
     """
-    Ensures LBS is always present and is always first.
+    Always keep LBS present and first.
     """
     cleaned = [x for x in selected if x != BASE_COMPANY]
     return [BASE_COMPANY] + cleaned
 
 
 # ─────────────────────────────────────────────────────────────
-# UI
+# APP
 # ─────────────────────────────────────────────────────────────
 def main():
     st.title("📈 Stock Overview — LBS Bina (Always Selected)")
 
-    # Start & End on same line
+    # --- Start / End on same line ---
     c1, c2 = st.columns(2)
     with c1:
         start_date = st.date_input("Start Date", value=date(2020, 1, 1), key="overview_start")
@@ -156,29 +153,32 @@ def main():
         st.error("Start date must be before end date.")
         return
 
-    # Companies on next line (LBS always included + locked)
+    # --- IMPORTANT: initialize widget state BEFORE creating the widget ---
     if "company_selector" not in st.session_state:
         st.session_state.company_selector = [BASE_COMPANY]
 
+    # --- Companies selector (next line) ---
     selected_companies = st.multiselect(
         "Select Companies (LBS Bina is always included)",
         options=list(ALL_COMPANIES.keys()),
-        default=st.session_state.company_selector,
         key="company_selector",
     )
 
-    selected_companies = enforce_base_selected(selected_companies)
-    st.session_state.company_selector = selected_companies  # force it in the widget state
+    # Enforce LBS always selected (safe way: update state + rerun)
+    enforced = enforce_base_first(selected_companies)
+    if enforced != selected_companies:
+        st.session_state.company_selector = enforced
+        st.rerun()
 
-    # Button to fetch
+    # Button
     get_data = st.button("Get Data", type="primary")
 
     if not get_data:
         st.info("Select dates + companies, then click **Get Data**.")
         return
 
-    # Build ticker list
-    tickers = [ALL_COMPANIES[name] for name in selected_companies]
+    # Build ticker list (LBS first)
+    tickers = [ALL_COMPANIES[name] for name in st.session_state.company_selector]
 
     with st.spinner("Fetching closing prices..."):
         close_wide = fetch_close_prices(tickers, start_date, end_date)
@@ -191,16 +191,16 @@ def main():
     ticker_to_company = {v: k for k, v in ALL_COMPANIES.items()}
     close_wide = close_wide.rename(columns=ticker_to_company)
 
-    # Make sure LBS is actually present (sometimes yfinance fails one ticker)
+    # Ensure LBS exists
     if BASE_COMPANY not in close_wide.columns:
         st.error("LBS Bina data did not return from Yahoo Finance for this period. Try a shorter range.")
         return
 
-    # Keep column order as user-selected (LBS first)
-    ordered_cols = [c for c in selected_companies if c in close_wide.columns]
-    close_wide = close_wide[ordered_cols]
+    # Keep order same as selection (LBS first)
+    ordered = [c for c in st.session_state.company_selector if c in close_wide.columns]
+    close_wide = close_wide[ordered]
 
-    # ── Metrics table
+    # --- Metrics table ---
     st.subheader("📌 Start vs End Performance (with Peak)")
     metrics = compute_perf_table(close_wide)
 
@@ -214,7 +214,7 @@ def main():
 
     st.dataframe(pretty, use_container_width=True, hide_index=True)
 
-    # ── Chart
+    # --- Chart ---
     st.subheader("📉 Closing Price Comparison")
 
     df_long = (
@@ -231,7 +231,6 @@ def main():
         color="Company",
         title="Closing Price Comparison",
     )
-
     fig.update_layout(
         xaxis_title="Date",
         yaxis_title="Closing Price (MYR)",
@@ -241,4 +240,5 @@ def main():
     fig.update_xaxes(rangeslider_visible=True)
 
     st.plotly_chart(fig, use_container_width=True)
+
 
