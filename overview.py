@@ -16,7 +16,7 @@ except Exception:
 
 st.set_page_config(page_title="Overview – Competitor Monitoring", layout="wide")
 
-# --- Base Company ---
+# --- Base ---
 BASE_COMPANY = "LBS Bina"
 BASE_TICKER = "5789.KL"
 
@@ -35,15 +35,12 @@ COMPETITORS = {
     "UOA Development": "5200.KL",
 }
 
+# Full universe shown in selector (includes base)
+ALL_COMPANIES = {BASE_COMPANY: BASE_TICKER, **COMPETITORS}
+
 # --- Data Fetch ---
 @st.cache_data(ttl=60 * 30)
 def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.DataFrame:
-    """
-    Returns wide dataframe:
-      index = Date (datetime)
-      columns = tickers
-      values = Close
-    """
     start = pd.to_datetime(start_dt)
     end_exclusive = pd.to_datetime(end_dt) + pd.Timedelta(days=1)
 
@@ -60,13 +57,12 @@ def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.D
     if data is None or data.empty:
         return pd.DataFrame()
 
-    # MultiIndex if multiple tickers
+    # MultiIndex when multiple tickers
     if isinstance(data.columns, pd.MultiIndex):
         if "Close" not in data.columns.get_level_values(0):
             return pd.DataFrame()
         close = data["Close"].copy()
     else:
-        # single ticker case
         if "Close" not in data.columns:
             return pd.DataFrame()
         close = data[["Close"]].copy()
@@ -76,26 +72,12 @@ def fetch_close_prices(tickers: list[str], start_dt: date, end_dt: date) -> pd.D
     close = close.sort_index()
     return close
 
-
 def compute_start_end_metrics(close_wide: pd.DataFrame) -> pd.DataFrame:
-    """
-    For each company column:
-      start_close = first non-null
-      end_close   = last non-null
-      diff        = end - start
-      pct_diff    = diff / start
-    """
     rows = []
     for company in close_wide.columns:
         s = close_wide[company].dropna()
         if s.empty:
-            rows.append({
-                "Company": company,
-                "Start Close": None,
-                "End Close": None,
-                "Diff (RM)": None,
-                "% Diff": None
-            })
+            rows.append({"Company": company, "Start Close": None, "End Close": None, "Diff (RM)": None, "% Diff": None})
             continue
 
         start_close = float(s.iloc[0])
@@ -112,18 +94,14 @@ def compute_start_end_metrics(close_wide: pd.DataFrame) -> pd.DataFrame:
         })
 
     dfm = pd.DataFrame(rows)
-
-    # sort by % diff desc, keep NaNs at bottom
     dfm["_sort"] = dfm["% Diff"].fillna(-10**18)
     dfm = dfm.sort_values("_sort", ascending=False).drop(columns=["_sort"])
-
     return dfm
 
-
 def main():
-    st.title("📈 LBS Bina vs Competitors — Closing Price Comparison")
+    st.title("📈 Stock Overview — LBS Bina as Base (Always Selected)")
 
-    # --- Filters layout (main page) ---
+    # --- Filters row: start/end ---
     c1, c2 = st.columns(2)
     with c1:
         start_date = st.date_input("Start Date", value=date(2020, 1, 1), key="overview_start")
@@ -134,60 +112,66 @@ def main():
         st.error("Start date must be before end date.")
         return
 
-    st.markdown("**Base (always included):** `LBS Bina (5789.KL)`")
+    # --- Company selector (next line) ---
+    # Initialize session state default selection
+    if "company_selection" not in st.session_state:
+        st.session_state.company_selection = [BASE_COMPANY]
 
-    selected_competitors = st.multiselect(
-        "Select Competitors (LBS is always included)",
-        options=list(COMPETITORS.keys()),
-        default=["S P Setia", "Sime Darby Property", "Eco World"],
-        key="overview_competitors",
+    selected_companies = st.multiselect(
+        "Select companies (LBS Bina is always included)",
+        options=list(ALL_COMPANIES.keys()),
+        default=st.session_state.company_selection,
+        key="company_selector",
     )
 
-    if not selected_competitors:
-        st.warning("Select at least one competitor.")
+    # Enforce LBS always selected
+    if BASE_COMPANY not in selected_companies:
+        selected_companies = [BASE_COMPANY] + selected_companies
+        st.session_state.company_selector = selected_companies
+
+    # Persist selection
+    st.session_state.company_selection = selected_companies
+
+    # Button
+    get_data = st.button("Get Data", type="primary")
+
+    if not get_data:
+        st.info("Choose dates + companies, then click **Get Data**.")
         return
 
-    # --- Build ticker list (LBS ALWAYS FIRST) ---
-    tickers = [BASE_TICKER] + [COMPETITORS[c] for c in selected_competitors]
+    # Build tickers list
+    tickers = [ALL_COMPANIES[name] for name in selected_companies]
 
-    with st.spinner("Fetching stock prices..."):
+    with st.spinner("Fetching closing prices..."):
         close_wide = fetch_close_prices(tickers, start_date, end_date)
 
     if close_wide.empty:
-        st.error("No data returned (Yahoo sometimes blocks). Try a shorter date range.")
+        st.error("No data returned. Try again or shorten the date range.")
         return
 
-    # --- Rename tickers -> names ---
-    rename_map = {BASE_TICKER: BASE_COMPANY}
-    rename_map.update({v: k for k, v in COMPETITORS.items()})
-    close_wide = close_wide.rename(columns=rename_map)
+    # Rename ticker columns -> company names
+    ticker_to_company = {v: k for k, v in ALL_COMPANIES.items()}
+    close_wide = close_wide.rename(columns=ticker_to_company)
 
-    # Ensure LBS column exists (otherwise show a loud error)
+    # Ensure LBS exists in output
     if BASE_COMPANY not in close_wide.columns:
-        st.error(
-            "LBS Bina data didn't come back from Yahoo Finance for the selected range.\n\n"
-            "Try:\n"
-            "- shorter date range\n"
-            "- run again\n"
-            "- or check ticker `5789.KL` availability"
-        )
-        st.dataframe(close_wide.head())
+        st.error("LBS Bina data did not return from Yahoo for this period. Try a shorter range.")
         return
 
-    # --- Metrics table ---
-    st.subheader("📌 Start vs End Performance (Selected Range)")
+    # --- Metrics ---
+    st.subheader("📌 Start vs End Performance")
     metrics = compute_start_end_metrics(close_wide)
 
-    # Pretty formatting for display
-    show = metrics.copy()
-    show["Start Close"] = show["Start Close"].map(lambda x: f"{x:,.3f}" if pd.notna(x) else "—")
-    show["End Close"] = show["End Close"].map(lambda x: f"{x:,.3f}" if pd.notna(x) else "—")
-    show["Diff (RM)"] = show["Diff (RM)"].map(lambda x: f"{x:,.3f}" if pd.notna(x) else "—")
-    show["% Diff"] = show["% Diff"].map(lambda x: f"{x:,.2f}%" if pd.notna(x) else "—")
+    pretty = metrics.copy()
+    pretty["Start Close"] = pretty["Start Close"].map(lambda x: f"{x:,.3f}" if pd.notna(x) else "—")
+    pretty["End Close"] = pretty["End Close"].map(lambda x: f"{x:,.3f}" if pd.notna(x) else "—")
+    pretty["Diff (RM)"] = pretty["Diff (RM)"].map(lambda x: f"{x:,.3f}" if pd.notna(x) else "—")
+    pretty["% Diff"] = pretty["% Diff"].map(lambda x: f"{x:,.2f}%" if pd.notna(x) else "—")
 
-    st.dataframe(show, use_container_width=True, hide_index=True)
+    st.dataframe(pretty, use_container_width=True, hide_index=True)
 
-    # --- Chart data (long form) ---
+    # --- Chart ---
+    st.subheader("📉 Closing Price Comparison")
     df_long = (
         close_wide.reset_index()
         .rename(columns={"index": "Date"})
@@ -195,14 +179,12 @@ def main():
         .dropna()
     )
 
-    # --- Chart ---
-    st.subheader("📉 Closing Price Comparison")
     fig = px.line(
         df_long,
         x="Date",
         y="Close",
         color="Company",
-        title="Closing Price (LBS Bina always included)",
+        title="Closing Price Comparison",
     )
     fig.update_layout(
         xaxis_title="Date",
