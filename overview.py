@@ -29,6 +29,7 @@ COMPETITORS = {
     "IOI Properties": "5249.KL",
     "Mah Sing": "8583.KL",
     "IJM Corporation": "3336.KL",
+    "LBS Bina": "5789.KL",
     "Sunway": "5211.KL",
     "Gamuda": "5398.KL",
     "OSK Holdings": "5053.KL",
@@ -131,3 +132,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
