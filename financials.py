@@ -21,7 +21,6 @@ companies = {
     "UOA Development": "5200.KL",
 }
 
-# Exact order of financial items (rows)
 ROW_ORDER = [
     "Total Revenue",
     "Cost Of Revenue",
@@ -64,7 +63,7 @@ ROW_PATMI = "Net Income From Continuing Operation Net Minority Interest"
 ROWS_UNSCALED = {
     "Basic EPS",
     "Diluted EPS",
-    "Tax Rate For Calcs",
+    "Tax Rate For Calcs",  # keep raw decimal like 0.0003
 }
 
 # -------------------------
@@ -79,26 +78,26 @@ def fetch_quarterly_financials(ticker_code: str) -> pd.DataFrame:
           * most items scaled to thousands
           * EPS + Tax Rate NOT scaled
     """
-    ticker = yf.Ticker(ticker_code)
-    df = ticker.quarterly_financials  # rows=items, cols=dates
+    t = yf.Ticker(ticker_code)
+    df = t.quarterly_financials  # rows=items, cols=dates
 
     if df is None or df.empty:
         empty = pd.DataFrame(columns=pd.to_datetime([]))
         return empty.reindex(ROW_ORDER)
 
-    # Ensure datetime columns (quarter end)
+    # Datetime columns
     try:
         df.columns = pd.to_datetime(df.columns)
     except Exception:
         df.columns = pd.to_datetime([str(c) for c in df.columns], errors="coerce")
 
-    # Reindex to our preferred row order (keeps missing rows as NaN)
+    # Reorder rows
     df = df.reindex(ROW_ORDER)
 
-    # Coerce everything numeric where possible
+    # Coerce numeric
     df = df.apply(pd.to_numeric, errors="coerce")
 
-    # Scale only non-EPS/non-rate rows
+    # Scale only the money-ish rows
     scale_rows = [r for r in df.index if r not in ROWS_UNSCALED]
     df.loc[scale_rows] = df.loc[scale_rows] / 1000.0
 
@@ -107,32 +106,21 @@ def fetch_quarterly_financials(ticker_code: str) -> pd.DataFrame:
 # -------------------------
 # DISPLAY FORMATTING
 # -------------------------
-def _detect_tax_rate_is_fraction(series: pd.Series) -> bool:
-    """
-    Heuristic: If typical values are between 0 and 1, treat as fraction (0.24).
-    If typical values are > 1, treat as already percent (24).
-    """
-    vals = pd.to_numeric(series, errors="coerce").dropna()
-    if vals.empty:
-        return True  # default safe assumption: fraction
-    typical = vals.abs().median()
-    return typical <= 1.0
-
 def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
     """
     Display rules:
-      - columns shown as MM/DD/YYYY
-      - exact 0 shown as '--'
+      - columns: MM/DD/YYYY
+      - exact 0: '--'
       - money rows (thousands): comma, 0 decimals
       - EPS: 2 decimals
-      - Tax Rate: % with 1 decimal (auto detects 0.24 vs 24)
+      - Tax Rate For Calcs: raw decimal (e.g., 0.0003) with up to 6 dp
     """
     if df is None or df.empty:
         return df
 
     display_df = df.copy()
 
-    # Convert column labels to strings
+    # Column labels as strings
     try:
         display_df.columns = pd.to_datetime(display_df.columns).strftime("%m/%d/%Y")
     except Exception:
@@ -140,11 +128,6 @@ def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
 
     # Replace exact zeros with --
     display_df = display_df.replace(0, "--")
-
-    # Detect how tax rate is represented (fraction vs percent)
-    tax_is_fraction = True
-    if "Tax Rate For Calcs" in df.index:
-        tax_is_fraction = _detect_tax_rate_is_fraction(df.loc["Tax Rate For Calcs"])
 
     def fmt_cell(row_name: str, x):
         if x == "--" or pd.isna(x):
@@ -154,14 +137,16 @@ def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             return x
 
+        # EPS rows
         if row_name in ("Basic EPS", "Diluted EPS"):
             return f"{val:.2f}"
 
+        # Tax rate: show raw decimal like Yahoo (0.0003)
         if row_name == "Tax Rate For Calcs":
-            pct = val * 100.0 if tax_is_fraction else val
-            return f"{pct:.1f}%"
+            # keep small numbers visible, but avoid trailing zeros
+            return f"{val:.6f}".rstrip("0").rstrip(".")
 
-        # default money-ish rows in thousands
+        # Default money-ish rows (in thousands)
         return f"{val:,.0f}"
 
     for r in display_df.index:
@@ -175,7 +160,7 @@ def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
 def get_revenue_data(company_list, start=None, end=None) -> pd.DataFrame:
     """
     Return DataFrame with columns: Company, Revenue (sum of quarters in [start,end]).
-    Revenue is in thousands (because scaling is applied).
+    Revenue is in thousands.
     """
     records = []
     start = pd.to_datetime(start) if start is not None else None
@@ -206,7 +191,7 @@ def get_revenue_data(company_list, start=None, end=None) -> pd.DataFrame:
 def get_patmi_data(company_list, start=None, end=None) -> pd.DataFrame:
     """
     Return DataFrame with columns: Company, PATMI (sum of quarters in [start,end]).
-    PATMI is in thousands (because scaling is applied).
+    PATMI is in thousands.
     """
     records = []
     start = pd.to_datetime(start) if start is not None else None
@@ -242,7 +227,7 @@ def main():
 
     st.caption(
         "Disclaimer: Most financial line items are shown in **thousands**. "
-        "**Basic/Diluted EPS** and **Tax Rate** are shown **unscaled**. "
+        "**Basic/Diluted EPS** and **Tax Rate For Calcs** are shown **unscaled** (raw). "
         "Data is sourced from Yahoo Finance (yfinance) and may be delayed, estimated, or incomplete. "
         "Use audited statements for official reporting."
     )
@@ -286,6 +271,10 @@ def main():
                     ),
                     use_container_width=True,
                 )
+
+                # Optional debug (comment out if you don't want it)
+                # if "Tax Rate For Calcs" in df.index:
+                #     st.write("DEBUG — Raw Tax Rate For Calcs:", df.loc["Tax Rate For Calcs"])
 
                 csv = df.to_csv()
                 st.download_button(
