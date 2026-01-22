@@ -3,6 +3,9 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 
+# -------------------------
+# CONFIG
+# -------------------------
 companies = {
     "LBS Bina": "5789.KL",
     "S P Setia": "8664.KL",
@@ -18,7 +21,7 @@ companies = {
     "UOA Development": "5200.KL",
 }
 
-# Define the exact order of financial items
+# Exact order of financial items (rows)
 ROW_ORDER = [
     "Total Revenue",
     "Cost Of Revenue",
@@ -51,203 +54,248 @@ ROW_ORDER = [
     "Total Unusual Items",
     "Normalized EBITDA",
     "Tax Rate For Calcs",
-    "Tax Effect Of Unusual Items"
+    "Tax Effect Of Unusual Items",
 ]
 
 ROW_REVENUE = "Total Revenue"
 ROW_PATMI = "Net Income From Continuing Operation Net Minority Interest"
 
-def fetch_quarterly_financials(ticker_code):
+# Rows that should NOT be scaled to thousands (ratios / per-share)
+ROWS_UNSCALED = {
+    "Basic EPS",
+    "Diluted EPS",
+    "Tax Rate For Calcs",
+}
+
+# -------------------------
+# DATA FETCHING
+# -------------------------
+def fetch_quarterly_financials(ticker_code: str) -> pd.DataFrame:
     """
-    Fetch quarterly financials and return a DataFrame:
-    - rows = financial items
-    - columns = quarter end dates (DatetimeIndex)
-    - numeric values (converted to thousands)
+    Returns a DataFrame:
+      - index: financial items (ROW_ORDER)
+      - columns: quarter end dates (Timestamp)
+      - values:
+          * most items scaled to thousands
+          * EPS + Tax Rate NOT scaled
     """
     ticker = yf.Ticker(ticker_code)
-    df = ticker.quarterly_financials  # items as rows, dates as columns
+    df = ticker.quarterly_financials  # rows=items, cols=dates
+
     if df is None or df.empty:
-        # return empty frame with expected index for safety
         empty = pd.DataFrame(columns=pd.to_datetime([]))
-        empty = empty.reindex(ROW_ORDER)
-        return empty
+        return empty.reindex(ROW_ORDER)
 
-    # fill missing with NaN (keep numeric type)
-    df = df.fillna(0)
-
-    # Convert numeric columns to thousands
-    for col in df.columns:
-        if pd.api.types.is_numeric_dtype(df[col]):
-            df[col] = df[col] / 1000.0
-
-    # Keep columns as actual datetimes for filtering later
+    # Ensure datetime columns (quarter end)
     try:
         df.columns = pd.to_datetime(df.columns)
     except Exception:
-        # fallback: try parsing each column
-        df.columns = pd.to_datetime([str(c) for c in df.columns], errors='coerce')
+        df.columns = pd.to_datetime([str(c) for c in df.columns], errors="coerce")
 
-    # Reorder rows according to ROW_ORDER (this may introduce NaNs for missing rows)
+    # Reindex to our preferred row order (keeps missing rows as NaN)
     df = df.reindex(ROW_ORDER)
+
+    # Coerce everything numeric where possible
+    df = df.apply(pd.to_numeric, errors="coerce")
+
+    # Scale only non-EPS/non-rate rows
+    scale_rows = [r for r in df.index if r not in ROWS_UNSCALED]
+    df.loc[scale_rows] = df.loc[scale_rows] / 1000.0
 
     return df
 
-def _format_for_display(df):
+# -------------------------
+# DISPLAY FORMATTING
+# -------------------------
+def _detect_tax_rate_is_fraction(series: pd.Series) -> bool:
     """
-    Return a copy of df formatted for display:
-    - column labels as 'MM/DD/YYYY'
-    - replace exact zeros with '--'
-    - format numbers with thousands separators (no decimals)
+    Heuristic: If typical values are between 0 and 1, treat as fraction (0.24).
+    If typical values are > 1, treat as already percent (24).
+    """
+    vals = pd.to_numeric(series, errors="coerce").dropna()
+    if vals.empty:
+        return True  # default safe assumption: fraction
+    typical = vals.abs().median()
+    return typical <= 1.0
+
+def format_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Display rules:
+      - columns shown as MM/DD/YYYY
+      - exact 0 shown as '--'
+      - money rows (thousands): comma, 0 decimals
+      - EPS: 2 decimals
+      - Tax Rate: % with 1 decimal (auto detects 0.24 vs 24)
     """
     if df is None or df.empty:
         return df
 
     display_df = df.copy()
 
-    # Convert columns to strings for display
+    # Convert column labels to strings
     try:
-        display_df.columns = display_df.columns.strftime('%m/%d/%Y')
+        display_df.columns = pd.to_datetime(display_df.columns).strftime("%m/%d/%Y")
     except Exception:
         display_df.columns = [str(c) for c in display_df.columns]
 
-    # Replace exact zeros with '--' for clarity
-    display_df = display_df.replace(0, '--')
+    # Replace exact zeros with --
+    display_df = display_df.replace(0, "--")
 
-    # Attempt to format numeric cells nicely: convert numeric cols to int and format
-    for col in display_df.columns:
-        # If column values are numeric, format them
+    # Detect how tax rate is represented (fraction vs percent)
+    tax_is_fraction = True
+    if "Tax Rate For Calcs" in df.index:
+        tax_is_fraction = _detect_tax_rate_is_fraction(df.loc["Tax Rate For Calcs"])
+
+    def fmt_cell(row_name: str, x):
+        if x == "--" or pd.isna(x):
+            return x
         try:
-            if pd.api.types.is_numeric_dtype(display_df[col]):
-                display_df[col] = display_df[col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else x)
+            val = float(x)
         except Exception:
-            # skip formatting if anything goes wrong
-            pass
+            return x
+
+        if row_name in ("Basic EPS", "Diluted EPS"):
+            return f"{val:.2f}"
+
+        if row_name == "Tax Rate For Calcs":
+            pct = val * 100.0 if tax_is_fraction else val
+            return f"{pct:.1f}%"
+
+        # default money-ish rows in thousands
+        return f"{val:,.0f}"
+
+    for r in display_df.index:
+        display_df.loc[r] = display_df.loc[r].apply(lambda x: fmt_cell(r, x))
 
     return display_df
 
-def main():
-    st.title("📊 Company Financials – Quarterly (Numbers in Thousands)")
-
-    selected_companies = st.multiselect(
-        "Select companies to view",
-        list(companies.keys()),
-        default=["LBS Bina"]
-    )
-
-    if st.button("Fetch Financials"):
-        for company in selected_companies:
-            try:
-                df = fetch_quarterly_financials(companies[company])
-
-                # Prepare a display-friendly copy
-                display_df = _format_for_display(df)
-
-                # --- Style the table for dark theme ---
-                st.subheader(f"📄 {company} Financial Table")
-                if display_df is None or display_df.empty:
-                    st.write("No financials available.")
-                else:
-                    st.dataframe(
-                        display_df.style
-                        .set_table_styles([
-                            {'selector': 'thead',
-                                'props': [('background-color', '#1e1e1e'), ('color', 'white')]},
-                            {'selector': 'tbody',
-                                'props': [('background-color', '#121212'), ('color', 'white')]}
-                        ])
-                    )
-
-                    # --- Download CSV per company (raw numeric df) ---
-                    csv = df.to_csv()
-                    st.download_button(
-                        f"Download {company} CSV",
-                        csv,
-                        file_name=f"{company.replace(' ', '_')}_financials.csv",
-                        mime="text/csv"
-                    )
-
-            except Exception as e:
-                st.error(f"Failed to fetch {company}: {e}")
-
-def get_revenue_data(company_list, start=None, end=None):
+# -------------------------
+# METRICS HELPERS
+# -------------------------
+def get_revenue_data(company_list, start=None, end=None) -> pd.DataFrame:
     """
     Return DataFrame with columns: Company, Revenue (sum of quarters in [start,end]).
-    start/end may be datetime.date, datetime.datetime, or pandas Timestamp.
+    Revenue is in thousands (because scaling is applied).
     """
     records = []
-    if start is not None:
-        start = pd.to_datetime(start)
-    if end is not None:
-        end = pd.to_datetime(end)
+    start = pd.to_datetime(start) if start is not None else None
+    end = pd.to_datetime(end) if end is not None else None
 
     for comp in company_list:
         ticker = companies.get(comp)
         if not ticker:
-            records.append({"Company": comp, "Revenue": 0})
+            records.append({"Company": comp, "Revenue": 0.0})
             continue
 
         df = fetch_quarterly_financials(ticker)
-        if ROW_REVENUE not in df.index:
-            records.append({"Company": comp, "Revenue": 0})
+        if df.empty or ROW_REVENUE not in df.index:
+            records.append({"Company": comp, "Revenue": 0.0})
             continue
 
-        row = df.loc[ROW_REVENUE]
-
-        # Ensure index is DatetimeIndex (should be) and values numeric
-        try:
-            idx = pd.DatetimeIndex(row.index)
-        except Exception:
-            idx = pd.to_datetime(row.index, errors='coerce')
-
-        row.index = idx
-        row = pd.to_numeric(row, errors='coerce')  # convert any weird strings to NaN
+        row = pd.to_numeric(df.loc[ROW_REVENUE], errors="coerce")
+        row.index = pd.to_datetime(row.index, errors="coerce")
 
         if start is not None and end is not None:
-            mask = (row.index >= start) & (row.index <= end)
-            row = row.loc[mask]
+            row = row.loc[(row.index >= start) & (row.index <= end)]
 
         revenue_sum = float(row.dropna().sum()) if not row.dropna().empty else 0.0
         records.append({"Company": comp, "Revenue": revenue_sum})
 
     return pd.DataFrame(records)
 
-def get_patmi_data(company_list, start=None, end=None):
+def get_patmi_data(company_list, start=None, end=None) -> pd.DataFrame:
     """
     Return DataFrame with columns: Company, PATMI (sum of quarters in [start,end]).
+    PATMI is in thousands (because scaling is applied).
     """
     records = []
-    if start is not None:
-        start = pd.to_datetime(start)
-    if end is not None:
-        end = pd.to_datetime(end)
+    start = pd.to_datetime(start) if start is not None else None
+    end = pd.to_datetime(end) if end is not None else None
 
     for comp in company_list:
         ticker = companies.get(comp)
         if not ticker:
-            records.append({"Company": comp, "PATMI": 0})
+            records.append({"Company": comp, "PATMI": 0.0})
             continue
 
         df = fetch_quarterly_financials(ticker)
-        if ROW_PATMI not in df.index:
-            records.append({"Company": comp, "PATMI": 0})
+        if df.empty or ROW_PATMI not in df.index:
+            records.append({"Company": comp, "PATMI": 0.0})
             continue
 
-        row = df.loc[ROW_PATMI]
-
-        # Ensure index is DatetimeIndex and values numeric
-        try:
-            idx = pd.DatetimeIndex(row.index)
-        except Exception:
-            idx = pd.to_datetime(row.index, errors='coerce')
-
-        row.index = idx
-        row = pd.to_numeric(row, errors='coerce')
+        row = pd.to_numeric(df.loc[ROW_PATMI], errors="coerce")
+        row.index = pd.to_datetime(row.index, errors="coerce")
 
         if start is not None and end is not None:
-            mask = (row.index >= start) & (row.index <= end)
-            row = row.loc[mask]
+            row = row.loc[(row.index >= start) & (row.index <= end)]
 
         patmi_sum = float(row.dropna().sum()) if not row.dropna().empty else 0.0
         records.append({"Company": comp, "PATMI": patmi_sum})
 
     return pd.DataFrame(records)
+
+# -------------------------
+# STREAMLIT PAGE
+# -------------------------
+def main():
+    st.title("📊 Company Financials – Quarterly")
+
+    st.caption(
+        "Disclaimer: Most financial line items are shown in **thousands**. "
+        "**Basic/Diluted EPS** and **Tax Rate** are shown **unscaled**. "
+        "Data is sourced from Yahoo Finance (yfinance) and may be delayed, estimated, or incomplete. "
+        "Use audited statements for official reporting."
+    )
+
+    selected_companies = st.multiselect(
+        "Select companies to view",
+        list(companies.keys()),
+        default=["LBS Bina"],
+    )
+
+    if st.button("Fetch Financials"):
+        for company in selected_companies:
+            try:
+                df = fetch_quarterly_financials(companies[company])
+                display_df = format_for_display(df)
+
+                st.subheader(f"📄 {company} Financial Table")
+
+                if display_df is None or display_df.empty:
+                    st.write("No financials available.")
+                    continue
+
+                st.dataframe(
+                    display_df.style.set_table_styles(
+                        [
+                            {
+                                "selector": "thead",
+                                "props": [
+                                    ("background-color", "#1e1e1e"),
+                                    ("color", "white"),
+                                ],
+                            },
+                            {
+                                "selector": "tbody",
+                                "props": [
+                                    ("background-color", "#121212"),
+                                    ("color", "white"),
+                                ],
+                            },
+                        ]
+                    ),
+                    use_container_width=True,
+                )
+
+                csv = df.to_csv()
+                st.download_button(
+                    label=f"Download {company} CSV",
+                    data=csv,
+                    file_name=f"{company.replace(' ', '_')}_financials.csv",
+                    mime="text/csv",
+                )
+
+            except Exception as e:
+                st.error(f"Failed to fetch {company}: {e}")
+
+
