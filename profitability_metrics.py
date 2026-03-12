@@ -6,7 +6,7 @@ def main():
 
     st.title("Profitability Metrics")
 
-    ticker_symbol = st.session_state.get("selected_ticker", "LBS.BK")
+    ticker_symbol = st.session_state["ticker"]
     ticker = yf.Ticker(ticker_symbol)
 
     financials = ticker.financials
@@ -16,16 +16,16 @@ def main():
         return
 
     # Use latest year
-    data = financials.iloc[:, 0]
-
-    revenue = data.get("Total Revenue", None)
-    gross_profit = data.get("Gross Profit", None)
-    operating_income = data.get("Operating Income", None)
-    pretax_income = data.get("Pretax Income", None)
-    tax_provision = data.get("Tax Provision", None)
-    net_income = data.get("Net Income", None)
-    interest_expense = data.get("Interest Expense", None)
-    ebitda = data.get("EBITDA", None)
+    data = financials.iloc[:,0]
+    
+    revenue = data.get("Total Revenue", 0)
+    gross_profit = data.get("Gross Profit", 0)
+    operating_income = data.get("Operating Income", 0)
+    pretax_income = data.get("Pretax Income", 0)
+    tax_provision = data.get("Tax Provision", 0)
+    net_income = data.get("Net Income", 0)
+    interest_expense = data.get("Interest Expense", 0)
+    ebitda = data.get("EBITDA", 0)
 
     metrics = {}
 
