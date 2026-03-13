@@ -117,16 +117,30 @@ def calculate_return(df, bs):
 
     for col in bs.columns:
 
-        net_income = df.loc["Net Income Common Stockholders", col] if "Net Income Common Stockholders" in df.index and col in df.columns else None
-        total_equity = bs.loc["Total Equity Gross Minority Interest", col] if "Total Equity Gross Minority Interest" in bs.index else None
-        total_assets = bs.loc["Total Assets", col] if "Total Assets" in bs.index else None
+        net_income = df.loc["Net Income Common Stockholders", col] \
+            if "Net Income Common Stockholders" in df.index and col in df.columns else None
+
+        total_equity = bs.loc["Total Equity Gross Minority Interest", col] \
+            if "Total Equity Gross Minority Interest" in bs.index else None
+
+        total_assets = bs.loc["Total Assets", col] \
+            if "Total Assets" in bs.index else None
+
+        # convert balance sheet values to thousands
+        if pd.notna(total_equity):
+            total_equity = total_equity / 1000
+
+        if pd.notna(total_assets):
+            total_assets = total_assets / 1000
 
         if pd.notna(net_income) and pd.notna(total_equity) and total_equity != 0:
+
             metrics.loc["Return on Equity (%)", col] = (
                 net_income / total_equity
             ) * 100
 
         if pd.notna(net_income) and pd.notna(total_assets) and total_assets != 0:
+
             metrics.loc["Return on Assets (%)", col] = (
                 net_income / total_assets
             ) * 100
