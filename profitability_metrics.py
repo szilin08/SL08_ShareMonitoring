@@ -189,7 +189,71 @@ def calculate_solvency(bs):
 
     return metrics
 
+def calculate_valuation(df, bs, ticker):
 
+    metrics = pd.DataFrame(index=[
+        "Enterprise Multiple (x)",
+        "Price Earnings Ratio (x)",
+        "Price to Book (x)",
+        "Price to Revenue (x)",
+        "Price to Cashflow (x)"
+    ], columns=df.columns)
+
+    info = ticker.info
+    cashflow = ticker.quarterly_cashflow
+
+    market_cap = info.get("marketCap", None)
+    pe_ratio = info.get("trailingPE", None)
+
+    for col in df.columns:
+
+        revenue = df.loc["Total Revenue", col] if "Total Revenue" in df.index else None
+        ebitda = df.loc["EBITDA", col] if "EBITDA" in df.index else None
+
+        total_debt = bs.loc["Total Debt", col] if "Total Debt" in bs.index else None
+        cash = bs.loc["Cash And Cash Equivalents", col] if "Cash And Cash Equivalents" in bs.index else None
+
+        total_assets = bs.loc["Total Assets", col] if "Total Assets" in bs.index else None
+        total_liabilities = bs.loc["Total Liabilities Net Minority Interest", col] \
+            if "Total Liabilities Net Minority Interest" in bs.index else None
+
+        operating_cf = cashflow.loc["Operating Cash Flow", col] \
+            if cashflow is not None and "Operating Cash Flow" in cashflow.index and col in cashflow.columns else None
+
+        # -------------------------
+        # Enterprise Multiple
+        # -------------------------
+        if pd.notna(market_cap) and pd.notna(total_debt) and pd.notna(cash) and pd.notna(ebitda) and ebitda != 0:
+            enterprise_value = market_cap + total_debt - cash
+            metrics.loc["Enterprise Multiple (x)", col] = enterprise_value / ebitda
+
+        # -------------------------
+        # PE Ratio
+        # -------------------------
+        if pd.notna(pe_ratio):
+            metrics.loc["Price Earnings Ratio (x)", col] = pe_ratio
+
+        # -------------------------
+        # Price to Book
+        # -------------------------
+        if pd.notna(market_cap) and pd.notna(total_assets) and pd.notna(total_liabilities):
+            book_value = total_assets - total_liabilities
+            if book_value != 0:
+                metrics.loc["Price to Book (x)", col] = market_cap / book_value
+
+        # -------------------------
+        # Price to Revenue
+        # -------------------------
+        if pd.notna(market_cap) and pd.notna(revenue) and revenue != 0:
+            metrics.loc["Price to Revenue (x)", col] = market_cap / revenue
+
+        # -------------------------
+        # Price to Cashflow
+        # -------------------------
+        if pd.notna(market_cap) and pd.notna(operating_cf) and operating_cf != 0:
+            metrics.loc["Price to Cashflow (x)", col] = market_cap / operating_cf
+
+    return metrics
 # ----------------------------------------------------
 # HELPER
 # ----------------------------------------------------
@@ -283,6 +347,18 @@ def main():
             st.subheader("Solvency Metrics")
             st.dataframe(
                 solvency_df.style.format("{:.2f}"),
+                use_container_width=True
+            )
+
+            # --------------------------------
+            # VALUATION
+            # --------------------------------
+            valuation_df = calculate_valuation(df, bs, ticker)
+            valuation_df = format_columns_as_dates(valuation_df)
+            
+            st.subheader("Valuation Metrics")
+            st.dataframe(
+                valuation_df.style.format("{:.2f}"),
                 use_container_width=True
             )
 
