@@ -25,6 +25,8 @@ COMPETITORS = {
     "Gamuda": "5398.KL",
     "OSK Holdings": "5053.KL",
     "UOA Development": "5200.KL",
+    "Matrix Concepts": "5236.KL",
+    "Lagenda Properties" : "7179.KL",
 }
 
 ALL_COMPANIES = {BASE_COMPANY: BASE_TICKER, **COMPETITORS}
