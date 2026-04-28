@@ -5,7 +5,7 @@ st.cache_data.clear()
 
 import stock_monitoring, financials, balance_sheet, cash_flow, overview, dividend, profitability_metrics, esg
 
-tabs = st.tabs(["Overview","Stock Monitoring", "Income Statement", "Balance Sheet","Cash Flow", "Dividend", "Profitability"])
+tabs = st.tabs(["Overview","Stock Monitoring", "Income Statement", "Balance Sheet","Cash Flow", "Dividend", "Financial Ratios"])
 
 with tabs[0]:
     overview.main()
