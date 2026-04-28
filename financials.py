@@ -6,6 +6,8 @@ import yfinance as yf
 # -------------------------
 # CONFIG
 # -------------------------
+BASE_COMPANY = "LBS Bina"
+
 companies = {
     "LBS Bina": "5789.KL",
     "S P Setia": "8664.KL",
@@ -68,10 +70,6 @@ ROWS_UNSCALED = {"Basic EPS", "Diluted EPS", "Tax Rate For Calcs"}
 # -------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_quarterly_financials(ticker_code: str) -> pd.DataFrame:
-    """
-    Returns DataFrame: index=ROW_ORDER, columns=quarter Timestamps.
-    Money rows scaled to thousands. EPS/TaxRate unscaled.
-    """
     t = yf.Ticker(ticker_code)
     df = t.quarterly_financials
     if df is None or df.empty:
@@ -88,7 +86,6 @@ def fetch_quarterly_financials(ticker_code: str) -> pd.DataFrame:
 
 
 def get_all_quarters(selected_companies: list) -> list:
-    """Return all unique quarter-end dates across selected companies, newest first."""
     all_dates = set()
     for comp in selected_companies:
         ticker = companies.get(comp)
@@ -105,17 +102,14 @@ def get_all_years(quarters: list) -> list:
 
 
 # -------------------------
-# BUILD TABLE
-# rows = ROW_ORDER, columns = company names
+# BUILD RAW TABLE
 # -------------------------
 def build_comparison_table(selected_companies: list, mode: str, period) -> pd.DataFrame:
-    """
-    mode = 'quarter' → period is a Timestamp
-    mode = 'year'    → period is an int year (sums quarters in that year)
-    Returns pure float DataFrame: index=ROW_ORDER, columns=company names.
-    """
+    # Always put LBS Bina first
+    ordered = [BASE_COMPANY] + [c for c in selected_companies if c != BASE_COMPANY]
+
     result = {}
-    for comp in selected_companies:
+    for comp in ordered:
         ticker = companies.get(comp)
         if not ticker:
             result[comp] = pd.Series(float("nan"), index=ROW_ORDER, dtype=float)
@@ -158,7 +152,7 @@ def build_comparison_table(selected_companies: list, mode: str, period) -> pd.Da
 
 
 # -------------------------
-# DISPLAY FORMATTING
+# FORMATTING HELPERS
 # -------------------------
 def fmt_cell(row_name: str, val) -> str:
     try:
@@ -176,12 +170,65 @@ def fmt_cell(row_name: str, val) -> str:
     return f"{v:,.0f}"
 
 
-def to_display(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Convert float DataFrame → all-string DataFrame for safe Styler use."""
-    out = {}
+def fmt_variance(diff: float, pct: float) -> str:
+    if pd.isna(diff) or pd.isna(pct):
+        return ""
+    sign = "+" if diff >= 0 else "-"
+    return f"{sign}{abs(diff):,.0f}  ({sign}{abs(pct):.1f}%)"
+
+
+# -------------------------
+# BUILD DISPLAY TABLE WITH VARIANCE
+# -------------------------
+def build_display_table(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    Returns:
+      display_df  — string DataFrame; each peer company gets a value col +
+                    a 'vs LBS Bina' variance col inserted right after it.
+      cell_styles — dict (row, col) → css string for variance colouring.
+    """
+    base_col = BASE_COMPANY
+    has_base = base_col in df_raw.columns
+
+    display_cols = []
+    col_data     = {}
+    cell_styles  = {}
+
     for comp in df_raw.columns:
-        out[comp] = {row: fmt_cell(row, df_raw.loc[row, comp]) for row in df_raw.index}
-    return pd.DataFrame(out, index=df_raw.index)
+        val_col = comp
+        var_col = f"{comp} vs LBS Bina" if comp != base_col else None
+
+        display_cols.append(val_col)
+        col_data[val_col] = {}
+
+        if var_col:
+            display_cols.append(var_col)
+            col_data[var_col] = {}
+
+        for row in ROW_ORDER:
+            raw_val = df_raw.loc[row, comp]
+            val_str = fmt_cell(row, raw_val)
+            col_data[val_col][row] = val_str
+
+            if var_col and has_base and row not in ROWS_UNSCALED:
+                base_val = df_raw.loc[row, base_col]
+                try:
+                    v    = float(raw_val)
+                    b    = float(base_val)
+                    diff = v - b
+                    pct  = (diff / abs(b) * 100) if b != 0 else float("nan")
+                    var_str = fmt_variance(diff, pct)
+                    col_data[var_col][row] = var_str
+                    if not pd.isna(diff) and var_str:
+                        colour = "#16a34a" if diff >= 0 else "#dc2626"
+                        cell_styles[(row, var_col)] = f"color:{colour};font-size:11px;"
+                except Exception:
+                    col_data[var_col][row] = ""
+            elif var_col:
+                col_data[var_col][row] = ""
+
+    display_df = pd.DataFrame(col_data, index=ROW_ORDER)[display_cols]
+    return display_df, cell_styles
 
 
 # -------------------------
@@ -234,11 +281,12 @@ def main():
     st.caption(
         "Most financial line items are shown in **thousands (RM'000)**. "
         "**Basic/Diluted EPS** and **Tax Rate For Calcs** are shown **unscaled**. "
+        "**LBS Bina is always the base** — variance columns show each peer's difference vs LBS Bina. "
         "Negative values shown in brackets. "
         "Data sourced from Yahoo Finance — may be delayed or estimated."
     )
 
-    # ── Company & period selection ────────────────────────────────────────────
+    # ── Controls ──────────────────────────────────────────────────────────────
     col_comp, col_mode, col_period = st.columns([3, 1, 2])
 
     with col_comp:
@@ -246,16 +294,21 @@ def main():
             "Select companies to compare",
             list(companies.keys()),
             default=["LBS Bina"],
+            key="fin_multiselect",
         )
 
     with col_mode:
-        view_mode = st.radio("View by", ["Quarter", "Year"], horizontal=True)
+        view_mode = st.radio("View by", ["Quarter", "Year"], horizontal=True,
+                             key="fin_view_mode")
+
+    # Always ensure LBS Bina is included
+    if BASE_COMPANY not in selected_companies:
+        selected_companies = [BASE_COMPANY] + selected_companies
 
     if not selected_companies:
         st.info("Select at least one company to continue.")
         return
 
-    # Discover available periods from the selected companies
     with st.spinner("Loading available periods…"):
         quarters = get_all_quarters(selected_companies)
         years    = get_all_years(quarters)
@@ -265,8 +318,9 @@ def main():
             if not quarters:
                 st.warning("No data found for selected companies.")
                 return
-            q_labels   = [q.strftime("%d %b %Y") for q in quarters]
-            sel_label  = st.selectbox("Select Quarter", q_labels, index=0)
+            q_labels  = [q.strftime("%d %b %Y") for q in quarters]
+            sel_label = st.selectbox("Select Quarter", q_labels, index=0,
+                                     key="fin_quarter_select")
             period     = quarters[q_labels.index(sel_label)]
             mode       = "quarter"
             period_str = sel_label
@@ -274,17 +328,17 @@ def main():
             if not years:
                 st.warning("No data found for selected companies.")
                 return
-            sel_year   = st.selectbox("Select Year", years, index=0)
+            sel_year   = st.selectbox("Select Year", years, index=0,
+                                      key="fin_year_select")
             period     = sel_year
             mode       = "year"
             period_str = str(sel_year)
 
-    # ── Fetch button ──────────────────────────────────────────────────────────
-    if not st.button("Fetch Financials", type="primary"):
+    # ── Fetch ─────────────────────────────────────────────────────────────────
+    if not st.button("Fetch Financials", type="primary", key="fin_fetch_btn"):
         st.caption("Press **Fetch Financials** to load the comparison table.")
         return
 
-    # ── Build table ───────────────────────────────────────────────────────────
     with st.spinner(f"Fetching data for {len(selected_companies)} companies…"):
         df_raw = build_comparison_table(selected_companies, mode, period)
 
@@ -292,61 +346,100 @@ def main():
         st.warning("No data returned. Try a different period or company selection.")
         return
 
-    df_display = to_display(df_raw)
+    display_df, cell_styles = build_display_table(df_raw)
 
-    # ── Render table ──────────────────────────────────────────────────────────
+    # ── Render ────────────────────────────────────────────────────────────────
     st.subheader(f"📄 Financial Comparison — {period_str}")
 
+    def apply_styles(df):
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        for (row, col), css in cell_styles.items():
+            if row in styles.index and col in styles.columns:
+                styles.loc[row, col] = css
+        return styles
+
+    var_cols = [c for c in display_df.columns if "vs LBS Bina" in c]
+
+    table_styles = [
+        {
+            "selector": "thead th",
+            "props": [
+                ("background-color", "#1e1e1e"),
+                ("color", "white"),
+                ("font-size", "12px"),
+                ("white-space", "nowrap"),
+                ("padding", "8px 10px"),
+            ],
+        },
+        {
+            "selector": "tbody td",
+            "props": [
+                ("background-color", "#121212"),
+                ("color", "white"),
+                ("font-size", "13px"),
+                ("padding", "6px 10px"),
+                ("text-align", "right"),
+                ("font-variant-numeric", "tabular-nums"),
+            ],
+        },
+        {
+            "selector": "tbody tr:hover td",
+            "props": [("background-color", "#1e2d40")],
+        },
+        {
+            "selector": "th.row_heading",
+            "props": [
+                ("background-color", "#121212"),
+                ("color", "#d1d5db"),
+                ("font-size", "12px"),
+                ("font-weight", "500"),
+                ("padding", "6px 12px"),
+                ("white-space", "nowrap"),
+                ("min-width", "260px"),
+                ("text-align", "left"),
+            ],
+        },
+    ]
+
+    # Dim variance column headers
+    for vc in var_cols:
+        table_styles.append({
+            "selector": f'thead th[id="{vc}"]',
+            "props": [("color", "#9ca3af"), ("font-style", "italic")],
+        })
+
+    styler = (
+        display_df.style
+        .apply(apply_styles, axis=None)
+        .set_table_styles(table_styles)
+    )
+
     st.dataframe(
-        df_display.style.set_table_styles([
-            {
-                "selector": "thead th",
-                "props": [
-                    ("background-color", "#1e1e1e"),
-                    ("color", "white"),
-                    ("font-size", "13px"),
-                    ("white-space", "nowrap"),
-                    ("padding", "8px 14px"),
-                ],
-            },
-            {
-                "selector": "tbody td",
-                "props": [
-                    ("background-color", "#121212"),
-                    ("color", "white"),
-                    ("font-size", "13px"),
-                    ("padding", "6px 14px"),
-                    ("text-align", "right"),
-                    ("font-variant-numeric", "tabular-nums"),
-                ],
-            },
-            {
-                "selector": "tbody tr:hover td",
-                "props": [("background-color", "#1e2d40")],
-            },
-            {
-                "selector": "th.row_heading",
-                "props": [
-                    ("background-color", "#121212"),
-                    ("color", "#d1d5db"),
-                    ("font-size", "12px"),
-                    ("font-weight", "500"),
-                    ("padding", "6px 14px"),
-                    ("white-space", "nowrap"),
-                    ("min-width", "260px"),
-                    ("text-align", "left"),
-                ],
-            },
-        ]),
+        styler,
         use_container_width=True,
         height=min(38 * len(ROW_ORDER) + 40, 900),
     )
 
-    # ── Download ──────────────────────────────────────────────────────────────
-    csv = df_display.to_csv().encode("utf-8")
+    # Legend
+    st.markdown(
+        "<p style='font-size:12px;color:#6b7280;margin-top:6px;'>"
+        "<span style='color:#16a34a;font-weight:600;'>+green</span> = higher than LBS Bina &nbsp;·&nbsp; "
+        "<span style='color:#dc2626;font-weight:600;'>-red</span> = lower than LBS Bina &nbsp;·&nbsp; "
+        "Variance = peer − LBS Bina</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Download (raw values only, no variance cols) ──────────────────────────
+    raw_display = pd.DataFrame(
+        {comp: {row: fmt_cell(row, df_raw.loc[row, comp]) for row in ROW_ORDER}
+         for comp in df_raw.columns},
+        index=ROW_ORDER,
+    )
+    csv = raw_display.to_csv().encode("utf-8")
     st.download_button(
         label=f"⬇️ Download CSV — {period_str}",
         data=csv,
         file_name=f"financials_{period_str.replace(' ', '_')}.csv",
         mime="text/csv",
+        key="fin_download_btn",
     )
