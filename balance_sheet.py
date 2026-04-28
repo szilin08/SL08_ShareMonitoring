@@ -4,6 +4,8 @@ import pandas as pd
 import yfinance as yf
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
+BASE_COMPANY = "LBS Bina"
+
 companies = {
     "LBS Bina": "5789.KL",
     "S P Setia": "8664.KL",
@@ -71,7 +73,7 @@ ROW_ORDER = [
     "Treasury Shares Number",
 ]
 
-# Rows that are share counts — keep unscaled (not in RM thousands)
+# Share count rows — unscaled (not RM thousands), no variance shown
 ROWS_UNSCALED = {
     "Share Issued",
     "Ordinary Shares Number",
@@ -82,10 +84,6 @@ ROWS_UNSCALED = {
 # ── DATA FETCHING ─────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_balance_sheet(ticker_code: str) -> pd.DataFrame:
-    """
-    Returns DataFrame: index=ROW_ORDER, columns=quarter Timestamps.
-    Money rows scaled to thousands. Share count rows unscaled.
-    """
     ticker = yf.Ticker(ticker_code)
     df = ticker.quarterly_balance_sheet
     if df is None or df.empty:
@@ -104,10 +102,10 @@ def fetch_balance_sheet(ticker_code: str) -> pd.DataFrame:
 def get_all_quarters(selected_companies: list) -> list:
     all_dates = set()
     for comp in selected_companies:
-        ticker = companies.get(comp)
-        if not ticker:
+        tk = companies.get(comp)
+        if not tk:
             continue
-        df = fetch_balance_sheet(ticker)
+        df = fetch_balance_sheet(tk)
         if not df.empty:
             all_dates.update([c for c in df.columns if pd.notna(c)])
     return sorted(all_dates, reverse=True)
@@ -117,21 +115,19 @@ def get_all_years(quarters: list) -> list:
     return sorted({q.year for q in quarters}, reverse=True)
 
 
-# ── BUILD COMPARISON TABLE ────────────────────────────────────────────────────
-def build_comparison_table(selected_companies: list, mode: str, period) -> pd.DataFrame:
-    """
-    Returns pure float DataFrame: index=ROW_ORDER, columns=company names.
-    mode='quarter' → period is a Timestamp
-    mode='year'    → period is an int (takes the most recent quarter in that year,
-                     since balance sheet is a point-in-time snapshot, not a sum)
-    """
+# ── BUILD RAW TABLE ───────────────────────────────────────────────────────────
+def build_raw_table(selected_companies: list, mode: str, period) -> pd.DataFrame:
+    """Pure float DataFrame: index=ROW_ORDER, columns=company names."""
+    # Always include LBS Bina as the first column
+    ordered = [BASE_COMPANY] + [c for c in selected_companies if c != BASE_COMPANY]
+
     result = {}
-    for comp in selected_companies:
-        ticker = companies.get(comp)
-        if not ticker:
+    for comp in ordered:
+        tk = companies.get(comp)
+        if not tk:
             result[comp] = pd.Series(float("nan"), index=ROW_ORDER, dtype=float)
             continue
-        df = fetch_balance_sheet(ticker)
+        df = fetch_balance_sheet(tk)
         if df.empty:
             result[comp] = pd.Series(float("nan"), index=ROW_ORDER, dtype=float)
             continue
@@ -143,8 +139,7 @@ def build_comparison_table(selected_companies: list, mode: str, period) -> pd.Da
                 result[comp] = pd.Series(float("nan"), index=ROW_ORDER, dtype=float)
             else:
                 result[comp] = df[col].reindex(ROW_ORDER).astype(float)
-
-        else:  # year — use the latest quarter in that year (balance sheet = snapshot)
+        else:
             yr_cols = sorted(
                 [c for c in df.columns if pd.Timestamp(c).year == int(period)],
                 reverse=True,
@@ -157,27 +152,80 @@ def build_comparison_table(selected_companies: list, mode: str, period) -> pd.Da
     return pd.DataFrame(result, index=ROW_ORDER).astype(float)
 
 
-# ── FORMATTING ────────────────────────────────────────────────────────────────
-def fmt_cell(row_name: str, val) -> str:
+# ── FORMATTING HELPERS ────────────────────────────────────────────────────────
+def fmt_value(row_name: str, val) -> str:
     try:
         v = float(val)
     except Exception:
         return "--"
     if pd.isna(v) or v == 0:
         return "--"
-    if row_name in ROWS_UNSCALED:
-        return f"{v:,.0f}"
     if v < 0:
         return f"({abs(v):,.0f})"
     return f"{v:,.0f}"
 
 
-def to_display(df_raw: pd.DataFrame) -> pd.DataFrame:
-    """Convert float DataFrame → all-string DataFrame for safe Styler use."""
-    out = {}
+def fmt_variance(diff: float, pct: float) -> str:
+    """Return a variance string like '+1,234,567 (+12.3%)' or '(1,234,567) (-12.3%)'."""
+    if pd.isna(diff) or pd.isna(pct):
+        return ""
+    abs_diff = abs(diff)
+    abs_pct  = abs(pct)
+    sign     = "+" if diff >= 0 else "-"
+    return f"{sign}{abs_diff:,.0f}  ({sign}{abs_pct:.1f}%)"
+
+
+# ── BUILD DISPLAY TABLE WITH VARIANCE ────────────────────────────────────────
+def build_display_table(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    Returns:
+      display_df  — string DataFrame where each non-base company column is
+                    replaced by two columns: value + variance vs LBS Bina
+      cell_styles — dict mapping (row, col) → css colour string
+    """
+    base_col = BASE_COMPANY
+    has_base = base_col in df_raw.columns
+
+    display_cols = []   # ordered list of final column names
+    col_data     = {}   # col_name → list of string values (indexed by ROW_ORDER)
+    cell_styles  = {}   # (row_name, col_name) → css
+
     for comp in df_raw.columns:
-        out[comp] = {row: fmt_cell(row, df_raw.loc[row, comp]) for row in df_raw.index}
-    return pd.DataFrame(out, index=df_raw.index)
+        val_col  = comp
+        var_col  = f"{comp} vs LBS Bina" if comp != base_col else None
+
+        display_cols.append(val_col)
+        col_data[val_col] = {}
+
+        if var_col:
+            display_cols.append(var_col)
+            col_data[var_col] = {}
+
+        for row in ROW_ORDER:
+            raw_val  = df_raw.loc[row, comp]
+            val_str  = fmt_value(row, raw_val)
+            col_data[val_col][row] = val_str
+
+            if var_col and has_base and row not in ROWS_UNSCALED:
+                base_val = df_raw.loc[row, base_col]
+                try:
+                    v     = float(raw_val)
+                    b     = float(base_val)
+                    diff  = v - b
+                    pct   = (diff / abs(b) * 100) if b != 0 else float("nan")
+                    var_str = fmt_variance(diff, pct)
+                    col_data[var_col][row] = var_str
+                    # colour
+                    if not pd.isna(diff) and var_str:
+                        colour = "#16a34a" if diff >= 0 else "#dc2626"
+                        cell_styles[(row, var_col)] = f"color:{colour};font-size:11px;"
+                except Exception:
+                    col_data[var_col][row] = ""
+            elif var_col:
+                col_data[var_col][row] = ""
+
+    display_df = pd.DataFrame(col_data, index=ROW_ORDER)[display_cols]
+    return display_df, cell_styles
 
 
 # ── STREAMLIT PAGE ────────────────────────────────────────────────────────────
@@ -185,12 +233,12 @@ def main():
     st.title("📊 Company Balance Sheet – Quarterly")
 
     st.caption(
-        "All monetary items are shown in **RM thousands**. "
-        "Share count rows (Share Issued, Ordinary/Preferred/Treasury Shares) are unscaled. "
-        "For **Year** view, the most recent quarter-end in that year is used "
-        "(balance sheet is a point-in-time snapshot, not a sum). "
+        "All monetary items in **RM thousands**. "
+        "Share count rows are unscaled. "
+        "**LBS Bina is always the base** — variance columns show each peer's difference vs LBS Bina. "
+        "For **Year** view, the most recent quarter-end within that year is used. "
         "Negative values shown in brackets. "
-        "Data sourced from Yahoo Finance — may be delayed or estimated."
+        "Data from Yahoo Finance — may be delayed or estimated."
     )
 
     # ── Controls ──────────────────────────────────────────────────────────────
@@ -200,7 +248,7 @@ def main():
         selected_companies = st.multiselect(
             "Select companies to compare",
             list(companies.keys()),
-            default=["LBS Bina"],
+            default=["LBS Bina", "Matrix Concepts"],
             key="balance_sheet_multiselect",
         )
 
@@ -208,7 +256,11 @@ def main():
         view_mode = st.radio("View by", ["Quarter", "Year"], horizontal=True,
                              key="bs_view_mode")
 
-    if not selected_companies:
+    # Always ensure LBS Bina is included
+    if BASE_COMPANY not in selected_companies:
+        selected_companies = [BASE_COMPANY] + selected_companies
+
+    if len(selected_companies) == 0:
         st.info("Select at least one company to continue.")
         return
 
@@ -219,7 +271,7 @@ def main():
     with col_period:
         if view_mode == "Quarter":
             if not quarters:
-                st.warning("No data found for selected companies.")
+                st.warning("No data found.")
                 return
             q_labels  = [q.strftime("%d %b %Y") for q in quarters]
             sel_label = st.selectbox("Select Quarter", q_labels, index=0,
@@ -229,7 +281,7 @@ def main():
             period_str = sel_label
         else:
             if not years:
-                st.warning("No data found for selected companies.")
+                st.warning("No data found.")
                 return
             sel_year   = st.selectbox("Select Year", years, index=0,
                                       key="bs_year_select")
@@ -243,67 +295,106 @@ def main():
         return
 
     with st.spinner(f"Fetching data for {len(selected_companies)} companies…"):
-        df_raw = build_comparison_table(selected_companies, mode, period)
+        df_raw = build_raw_table(selected_companies, mode, period)
 
     if df_raw.empty or df_raw.isna().all().all():
         st.warning("No data returned. Try a different period or company selection.")
         return
 
-    df_display = to_display(df_raw)
+    display_df, cell_styles = build_display_table(df_raw)
 
     # ── Render ────────────────────────────────────────────────────────────────
     st.subheader(f"📄 Balance Sheet Comparison — {period_str}")
-
     if mode == "year":
         st.caption(f"Showing latest available quarter within {period_str} for each company.")
 
+    # Build Styler
+    def apply_styles(df):
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        for (row, col), css in cell_styles.items():
+            if row in styles.index and col in styles.columns:
+                styles.loc[row, col] = css
+        return styles
+
+    # Identify variance columns for lighter header treatment
+    var_cols = [c for c in display_df.columns if "vs LBS Bina" in c]
+
+    table_styles = [
+        {
+            "selector": "thead th",
+            "props": [
+                ("background-color", "#1e1e1e"),
+                ("color", "white"),
+                ("font-size", "12px"),
+                ("white-space", "nowrap"),
+                ("padding", "8px 10px"),
+            ],
+        },
+        {
+            "selector": "tbody td",
+            "props": [
+                ("background-color", "#121212"),
+                ("color", "white"),
+                ("font-size", "13px"),
+                ("padding", "6px 10px"),
+                ("text-align", "right"),
+                ("font-variant-numeric", "tabular-nums"),
+            ],
+        },
+        {
+            "selector": "tbody tr:hover td",
+            "props": [("background-color", "#1e2d40")],
+        },
+        {
+            "selector": "th.row_heading",
+            "props": [
+                ("background-color", "#121212"),
+                ("color", "#d1d5db"),
+                ("font-size", "12px"),
+                ("font-weight", "500"),
+                ("padding", "6px 12px"),
+                ("white-space", "nowrap"),
+                ("min-width", "240px"),
+                ("text-align", "left"),
+            ],
+        },
+    ]
+
+    # Dim the variance column headers slightly
+    for vc in var_cols:
+        table_styles.append({
+            "selector": f'thead th[id="{vc}"]',
+            "props": [("color", "#9ca3af"), ("font-style", "italic")],
+        })
+
+    styler = (
+        display_df.style
+        .apply(apply_styles, axis=None)
+        .set_table_styles(table_styles)
+    )
+
     st.dataframe(
-        df_display.style.set_table_styles([
-            {
-                "selector": "thead th",
-                "props": [
-                    ("background-color", "#1e1e1e"),
-                    ("color", "white"),
-                    ("font-size", "13px"),
-                    ("white-space", "nowrap"),
-                    ("padding", "8px 14px"),
-                ],
-            },
-            {
-                "selector": "tbody td",
-                "props": [
-                    ("background-color", "#121212"),
-                    ("color", "white"),
-                    ("font-size", "13px"),
-                    ("padding", "6px 14px"),
-                    ("text-align", "right"),
-                    ("font-variant-numeric", "tabular-nums"),
-                ],
-            },
-            {
-                "selector": "tbody tr:hover td",
-                "props": [("background-color", "#1e2d40")],
-            },
-            {
-                "selector": "th.row_heading",
-                "props": [
-                    ("background-color", "#121212"),
-                    ("color", "#d1d5db"),
-                    ("font-size", "12px"),
-                    ("font-weight", "500"),
-                    ("padding", "6px 14px"),
-                    ("white-space", "nowrap"),
-                    ("min-width", "260px"),
-                    ("text-align", "left"),
-                ],
-            },
-        ]),
+        styler,
         use_container_width=True,
         height=min(38 * len(ROW_ORDER) + 40, 900),
     )
 
-    # ── Download ──────────────────────────────────────────────────────────────
-    csv = df_display.to_csv().encode("utf-8")
+    # Legend
+    st.markdown(
+        "<p style='font-size:12px;color:#6b7280;margin-top:6px;'>"
+        "<span style='color:#16a34a;font-weight:600;'>+green</span> = higher than LBS Bina &nbsp;·&nbsp; "
+        "<span style='color:#dc2626;font-weight:600;'>-red</span> = lower than LBS Bina &nbsp;·&nbsp; "
+        "Variance = peer − LBS Bina</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Download (raw values only, no variance cols) ──────────────────────────
+    raw_display = pd.DataFrame(
+        {comp: {row: fmt_value(row, df_raw.loc[row, comp]) for row in ROW_ORDER}
+         for comp in df_raw.columns},
+        index=ROW_ORDER,
+    )
+    csv = raw_display.to_csv().encode("utf-8")
     st.download_button(
         label=f"⬇️ Download CSV — {period_str}",
         data=csv,
