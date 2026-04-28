@@ -1,5 +1,6 @@
 # pages/balance_sheet.py
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 import yfinance as yf
 
@@ -295,14 +296,18 @@ def build_html_table(df_raw: pd.DataFrame) -> str:
 
         body_rows += f"<tr>{cells}</tr>\n"
 
-    html = f"""
-    {css}
+    html = f"""<!DOCTYPE html>
+    <html>
+    <head><meta charset="utf-8">{css}</head>
+    <body style="margin:0;padding:0;background:#121212;">
     <div class="bs-wrap">
       <table class="bs-table">
         <thead><tr>{header_cells}</tr></thead>
         <tbody>{body_rows}</tbody>
       </table>
     </div>
+    </body>
+    </html>
     """
     return html
 
@@ -391,7 +396,10 @@ def main():
         )
 
     html_table = build_html_table(df_raw)
-    st.markdown(html_table, unsafe_allow_html=True)
+    row_count  = len(ROW_ORDER)
+    # ~52px per row (two lines) + header + padding
+    table_height = min(row_count * 52 + 60, 900)
+    components.html(html_table, height=table_height, scrolling=True)
 
     # Legend
     st.markdown(
