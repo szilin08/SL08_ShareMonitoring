@@ -115,6 +115,10 @@ def fetch_quarterly(ticker_code: str) -> pd.DataFrame:
     return df
 
 
+# Backward-compatible alias — used by profitability_metrics.py and other pages
+fetch_quarterly_financials = fetch_quarterly
+
+
 def all_quarters(comp_list):
     seen = set()
     for c in comp_list:
