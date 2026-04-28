@@ -1,6 +1,5 @@
 # pages/balance_sheet.py
 import streamlit as st
-import streamlit.components.v1 as components
 import pandas as pd
 import yfinance as yf
 
@@ -119,6 +118,7 @@ def get_all_years(quarters: list) -> list:
 # ── BUILD RAW TABLE ───────────────────────────────────────────────────────────
 def build_raw_table(selected_companies: list, mode: str, period) -> pd.DataFrame:
     """Pure float DataFrame: index=ROW_ORDER, columns=company names."""
+    # Always include LBS Bina as the first column
     ordered = [BASE_COMPANY] + [c for c in selected_companies if c != BASE_COMPANY]
 
     result = {}
@@ -165,151 +165,67 @@ def fmt_value(row_name: str, val) -> str:
     return f"{v:,.0f}"
 
 
-def variance_parts(diff: float, pct: float) -> tuple[str, bool]:
-    """
-    Returns (variance_string, is_positive).
-    e.g. "+1,234 (+12.3%)" or "(1,234) (-12.3%)"
-    """
+def fmt_variance(diff: float, pct: float) -> str:
+    """Return a variance string like '+1,234,567 (+12.3%)' or '(1,234,567) (-12.3%)'."""
     if pd.isna(diff) or pd.isna(pct):
-        return "", True
+        return ""
     abs_diff = abs(diff)
     abs_pct  = abs(pct)
-    is_pos   = diff >= 0
-    sign     = "+" if is_pos else "-"
-    return f"{sign}{abs_diff:,.0f} ({sign}{abs_pct:.1f}%)", is_pos
+    sign     = "+" if diff >= 0 else "-"
+    return f"{sign}{abs_diff:,.0f}  ({sign}{abs_pct:.1f}%)"
 
 
-# ── BUILD HTML TABLE ──────────────────────────────────────────────────────────
-def build_html_table(df_raw: pd.DataFrame) -> str:
+# ── BUILD DISPLAY TABLE WITH VARIANCE ────────────────────────────────────────
+def build_display_table(df_raw: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
-    Renders an HTML table where each peer company column shows the value on
-    the top line and the coloured variance on a second line — no extra columns.
+    Returns:
+      display_df  — string DataFrame where each non-base company column is
+                    replaced by two columns: value + variance vs LBS Bina
+      cell_styles — dict mapping (row, col) → css colour string
     """
     base_col = BASE_COMPANY
     has_base = base_col in df_raw.columns
-    cols     = list(df_raw.columns)
 
-    # ── styles ────────────────────────────────────────────────────────────────
-    css = """
-    <style>
-    .bs-wrap {
-        overflow-x: auto;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    }
-    .bs-table {
-        border-collapse: collapse;
-        width: 100%;
-        font-size: 13px;
-        background: #121212;
-        color: #f3f4f6;
-    }
-    .bs-table thead th {
-        background: #1e1e1e;
-        color: #f9fafb;
-        font-size: 12px;
-        font-weight: 600;
-        padding: 10px 12px;
-        text-align: right;
-        white-space: nowrap;
-        position: sticky;
-        top: 0;
-        z-index: 2;
-        border-bottom: 1px solid #374151;
-    }
-    .bs-table thead th.row-label {
-        text-align: left;
-        min-width: 240px;
-        position: sticky;
-        left: 0;
-        z-index: 3;
-        background: #1e1e1e;
-    }
-    .bs-table tbody td {
-        padding: 6px 12px;
-        text-align: right;
-        white-space: nowrap;
-        border-bottom: 1px solid #1f2937;
-        font-variant-numeric: tabular-nums;
-        vertical-align: top;
-        min-width: 140px;
-    }
-    .bs-table tbody td.row-label {
-        text-align: left;
-        color: #d1d5db;
-        font-size: 12px;
-        font-weight: 500;
-        position: sticky;
-        left: 0;
-        background: #121212;
-        z-index: 1;
-        min-width: 240px;
-    }
-    .bs-table tbody tr:hover td {
-        background: #1e2d40;
-    }
-    .bs-table tbody tr:hover td.row-label {
-        background: #1e2d40;
-    }
-    .val-main  { display: block; }
-    .val-var   { display: block; font-size: 11px; margin-top: 2px; }
-    .pos       { color: #16a34a; }
-    .neg       { color: #dc2626; }
-    .base-col  { color: #f3f4f6; }
-    </style>
-    """
+    display_cols = []   # ordered list of final column names
+    col_data     = {}   # col_name → list of string values (indexed by ROW_ORDER)
+    cell_styles  = {}   # (row_name, col_name) → css
 
-    # ── header row ────────────────────────────────────────────────────────────
-    header_cells = '<th class="row-label">Metric</th>'
-    for comp in cols:
-        header_cells += f"<th>{comp}</th>"
+    for comp in df_raw.columns:
+        val_col  = comp
+        var_col  = f"{comp} vs LBS Bina" if comp != base_col else None
 
-    # ── body rows ─────────────────────────────────────────────────────────────
-    body_rows = ""
-    for row in ROW_ORDER:
-        cells = f'<td class="row-label">{row}</td>'
+        display_cols.append(val_col)
+        col_data[val_col] = {}
 
-        for comp in cols:
-            raw_val = df_raw.loc[row, comp]
-            val_str = fmt_value(row, raw_val)
+        if var_col:
+            display_cols.append(var_col)
+            col_data[var_col] = {}
 
-            if comp == base_col:
-                cells += f'<td><span class="val-main base-col">{val_str}</span></td>'
-                continue
+        for row in ROW_ORDER:
+            raw_val  = df_raw.loc[row, comp]
+            val_str  = fmt_value(row, raw_val)
+            col_data[val_col][row] = val_str
 
-            # peer column — compute variance vs base
-            var_html = ""
-            if has_base and row not in ROWS_UNSCALED and val_str != "--":
+            if var_col and has_base and row not in ROWS_UNSCALED:
                 base_val = df_raw.loc[row, base_col]
                 try:
-                    v    = float(raw_val)
-                    b    = float(base_val)
-                    diff = v - b
-                    pct  = (diff / abs(b) * 100) if b != 0 else float("nan")
-                    var_str, is_pos = variance_parts(diff, pct)
-                    if var_str:
-                        colour_cls = "pos" if is_pos else "neg"
-                        var_html   = f'<span class="val-var {colour_cls}">{var_str}</span>'
+                    v     = float(raw_val)
+                    b     = float(base_val)
+                    diff  = v - b
+                    pct   = (diff / abs(b) * 100) if b != 0 else float("nan")
+                    var_str = fmt_variance(diff, pct)
+                    col_data[var_col][row] = var_str
+                    # colour
+                    if not pd.isna(diff) and var_str:
+                        colour = "#16a34a" if diff >= 0 else "#dc2626"
+                        cell_styles[(row, var_col)] = f"color:{colour};font-size:11px;"
                 except Exception:
-                    pass
+                    col_data[var_col][row] = ""
+            elif var_col:
+                col_data[var_col][row] = ""
 
-            cells += f'<td><span class="val-main">{val_str}</span>{var_html}</td>'
-
-        body_rows += f"<tr>{cells}</tr>\n"
-
-    html = f"""<!DOCTYPE html>
-    <html>
-    <head><meta charset="utf-8">{css}</head>
-    <body style="margin:0;padding:0;background:#121212;">
-    <div class="bs-wrap">
-      <table class="bs-table">
-        <thead><tr>{header_cells}</tr></thead>
-        <tbody>{body_rows}</tbody>
-      </table>
-    </div>
-    </body>
-    </html>
-    """
-    return html
+    display_df = pd.DataFrame(col_data, index=ROW_ORDER)[display_cols]
+    return display_df, cell_styles
 
 
 # ── STREAMLIT PAGE ────────────────────────────────────────────────────────────
@@ -319,7 +235,7 @@ def main():
     st.caption(
         "All monetary items in **RM thousands**. "
         "Share count rows are unscaled. "
-        "**LBS Bina is always the base** — variance shown inline below each peer's value. "
+        "**LBS Bina is always the base** — variance columns show each peer's difference vs LBS Bina. "
         "For **Year** view, the most recent quarter-end within that year is used. "
         "Negative values shown in brackets. "
         "Data from Yahoo Finance — may be delayed or estimated."
@@ -337,9 +253,8 @@ def main():
         )
 
     with col_mode:
-        view_mode = st.radio(
-            "View by", ["Quarter", "Year"], horizontal=True, key="bs_view_mode"
-        )
+        view_mode = st.radio("View by", ["Quarter", "Year"], horizontal=True,
+                             key="bs_view_mode")
 
     # Always ensure LBS Bina is included
     if BASE_COMPANY not in selected_companies:
@@ -359,9 +274,8 @@ def main():
                 st.warning("No data found.")
                 return
             q_labels  = [q.strftime("%d %b %Y") for q in quarters]
-            sel_label = st.selectbox(
-                "Select Quarter", q_labels, index=0, key="bs_quarter_select"
-            )
+            sel_label = st.selectbox("Select Quarter", q_labels, index=0,
+                                     key="bs_quarter_select")
             period     = quarters[q_labels.index(sel_label)]
             mode       = "quarter"
             period_str = sel_label
@@ -369,9 +283,8 @@ def main():
             if not years:
                 st.warning("No data found.")
                 return
-            sel_year   = st.selectbox(
-                "Select Year", years, index=0, key="bs_year_select"
-            )
+            sel_year   = st.selectbox("Select Year", years, index=0,
+                                      key="bs_year_select")
             period     = sel_year
             mode       = "year"
             period_str = str(sel_year)
@@ -388,34 +301,97 @@ def main():
         st.warning("No data returned. Try a different period or company selection.")
         return
 
+    display_df, cell_styles = build_display_table(df_raw)
+
     # ── Render ────────────────────────────────────────────────────────────────
     st.subheader(f"📄 Balance Sheet Comparison — {period_str}")
     if mode == "year":
-        st.caption(
-            f"Showing latest available quarter within {period_str} for each company."
-        )
+        st.caption(f"Showing latest available quarter within {period_str} for each company.")
 
-    html_table = build_html_table(df_raw)
-    row_count  = len(ROW_ORDER)
-    # ~52px per row (two lines) + header + padding
-    table_height = min(row_count * 52 + 60, 900)
-    components.html(html_table, height=table_height, scrolling=True)
+    # Build Styler
+    def apply_styles(df):
+        styles = pd.DataFrame("", index=df.index, columns=df.columns)
+        for (row, col), css in cell_styles.items():
+            if row in styles.index and col in styles.columns:
+                styles.loc[row, col] = css
+        return styles
+
+    # Identify variance columns for lighter header treatment
+    var_cols = [c for c in display_df.columns if "vs LBS Bina" in c]
+
+    table_styles = [
+        {
+            "selector": "thead th",
+            "props": [
+                ("background-color", "#1e1e1e"),
+                ("color", "white"),
+                ("font-size", "12px"),
+                ("white-space", "nowrap"),
+                ("padding", "8px 10px"),
+            ],
+        },
+        {
+            "selector": "tbody td",
+            "props": [
+                ("background-color", "#121212"),
+                ("color", "white"),
+                ("font-size", "13px"),
+                ("padding", "6px 10px"),
+                ("text-align", "right"),
+                ("font-variant-numeric", "tabular-nums"),
+            ],
+        },
+        {
+            "selector": "tbody tr:hover td",
+            "props": [("background-color", "#1e2d40")],
+        },
+        {
+            "selector": "th.row_heading",
+            "props": [
+                ("background-color", "#121212"),
+                ("color", "#d1d5db"),
+                ("font-size", "12px"),
+                ("font-weight", "500"),
+                ("padding", "6px 12px"),
+                ("white-space", "nowrap"),
+                ("min-width", "240px"),
+                ("text-align", "left"),
+            ],
+        },
+    ]
+
+    # Dim the variance column headers slightly
+    for vc in var_cols:
+        table_styles.append({
+            "selector": f'thead th[id="{vc}"]',
+            "props": [("color", "#9ca3af"), ("font-style", "italic")],
+        })
+
+    styler = (
+        display_df.style
+        .apply(apply_styles, axis=None)
+        .set_table_styles(table_styles)
+    )
+
+    st.dataframe(
+        styler,
+        use_container_width=True,
+        height=min(38 * len(ROW_ORDER) + 40, 900),
+    )
 
     # Legend
     st.markdown(
-        "<p style='font-size:12px;color:#6b7280;margin-top:10px;'>"
+        "<p style='font-size:12px;color:#6b7280;margin-top:6px;'>"
         "<span style='color:#16a34a;font-weight:600;'>+green</span> = higher than LBS Bina &nbsp;·&nbsp; "
         "<span style='color:#dc2626;font-weight:600;'>-red</span> = lower than LBS Bina &nbsp;·&nbsp; "
-        "Variance = peer − LBS Bina &nbsp;·&nbsp; shown inline below each value</p>",
+        "Variance = peer − LBS Bina</p>",
         unsafe_allow_html=True,
     )
 
-    # ── Download ──────────────────────────────────────────────────────────────
+    # ── Download (raw values only, no variance cols) ──────────────────────────
     raw_display = pd.DataFrame(
-        {
-            comp: {row: fmt_value(row, df_raw.loc[row, comp]) for row in ROW_ORDER}
-            for comp in df_raw.columns
-        },
+        {comp: {row: fmt_value(row, df_raw.loc[row, comp]) for row in ROW_ORDER}
+         for comp in df_raw.columns},
         index=ROW_ORDER,
     )
     csv = raw_display.to_csv().encode("utf-8")
