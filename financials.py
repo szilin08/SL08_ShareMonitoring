@@ -229,7 +229,7 @@ def get_patmi_data(company_list, start=None, end=None) -> pd.DataFrame:
 # STREAMLIT PAGE
 # -------------------------
 def main():
-    st.title("📊 Company Financials – Quarterly")
+    st.title("📊 Company Financials – Quarterly / Yearly")
 
     st.caption(
         "Most financial line items are shown in **thousands (RM'000)**. "
