@@ -442,45 +442,51 @@ def main():
         sel_quarter   = quarters_sorted[q_labels.index(sel_label)]
 
     # ── fetch button ──────────────────────────────────────────
-    if not st.button("Calculate Ratios", type="primary", key="ratios_calc_btn"):
+    if st.button("Calculate Ratios", type="primary", key="ratios_calc_btn"):
+        fin_data = {}
+        bs_data  = {}
+        tk_codes = {}
+        with st.spinner(f"Fetching data for {len(selected_companies)} companies…"):
+            for comp in selected_companies:
+                tk_code = companies.get(comp)
+                if not tk_code:
+                    continue
+                df_fin = fetch_quarterly_financials(tk_code)
+                bs_raw = yf.Ticker(tk_code).quarterly_balance_sheet
+                if df_fin.empty or bs_raw is None or bs_raw.empty:
+                    st.warning(f"Incomplete data for {comp}, skipping.")
+                    continue
+                try:
+                    bs_raw.columns = pd.to_datetime(bs_raw.columns)
+                except Exception:
+                    pass
+                fin_data[comp] = df_fin
+                bs_data[comp]  = bs_raw
+                tk_codes[comp] = tk_code
+
+        if not fin_data:
+            st.error("No data could be loaded.")
+            return
+
+        comp_list = list(fin_data.keys())
+        st.session_state["ratios_prof_map"]  = {c: calc_profitability(fin_data[c]) for c in comp_list}
+        st.session_state["ratios_liq_map"]   = {c: calc_liquidity(bs_data[c])      for c in comp_list}
+        st.session_state["ratios_ret_map"]   = {c: calc_return(fin_data[c], bs_data[c]) for c in comp_list}
+        st.session_state["ratios_solv_map"]  = {c: calc_solvency(bs_data[c])        for c in comp_list}
+        st.session_state["ratios_val_map"]   = {c: calc_valuation(fin_data[c], bs_data[c], tk_codes[c]) for c in comp_list}
+        st.session_state["ratios_comp_list"] = comp_list
+
+    # ── guard: nothing loaded yet ─────────────────────────────
+    if "ratios_prof_map" not in st.session_state:
         st.caption("Press **Calculate Ratios** to load the dashboard.")
         return
 
-    # ── load all data ─────────────────────────────────────────
-    fin_data  = {}   # comp → quarterly financials df
-    bs_data   = {}   # comp → quarterly balance sheet df
-    tk_codes  = {}   # comp → ticker code string
-
-    with st.spinner(f"Fetching data for {len(selected_companies)} companies…"):
-        for comp in selected_companies:
-            tk_code = companies.get(comp)
-            if not tk_code:
-                continue
-            df_fin = fetch_quarterly_financials(tk_code)
-            bs_raw = yf.Ticker(tk_code).quarterly_balance_sheet
-            if df_fin.empty or bs_raw is None or bs_raw.empty:
-                st.warning(f"Incomplete data for {comp}, skipping.")
-                continue
-            try:
-                bs_raw.columns = pd.to_datetime(bs_raw.columns)
-            except Exception:
-                pass
-            fin_data[comp] = df_fin
-            bs_data[comp]  = bs_raw
-            tk_codes[comp] = tk_code
-
-    if not fin_data:
-        st.error("No data could be loaded.")
-        return
-
-    comp_list = list(fin_data.keys())
-
-    # ── compute all metric DataFrames ─────────────────────────
-    prof_map  = {c: calc_profitability(fin_data[c]) for c in comp_list}
-    liq_map   = {c: calc_liquidity(bs_data[c])      for c in comp_list}
-    ret_map   = {c: calc_return(fin_data[c], bs_data[c]) for c in comp_list}
-    solv_map  = {c: calc_solvency(bs_data[c])        for c in comp_list}
-    val_map   = {c: calc_valuation(fin_data[c], bs_data[c], tk_codes[c]) for c in comp_list}
+    prof_map  = st.session_state["ratios_prof_map"]
+    liq_map   = st.session_state["ratios_liq_map"]
+    ret_map   = st.session_state["ratios_ret_map"]
+    solv_map  = st.session_state["ratios_solv_map"]
+    val_map   = st.session_state["ratios_val_map"]
+    comp_list = st.session_state["ratios_comp_list"]
 
     # ── colour legend ─────────────────────────────────────────
     legend_html = " &nbsp; ".join(
