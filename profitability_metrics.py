@@ -252,18 +252,32 @@ def make_line_chart(data: dict, metric: str, comp_list: list) -> go.Figure:
         if series.empty:
             continue
         colour = company_color(comp, comp_list)
+        # Use actual Timestamps so Plotly aligns all companies on a shared time axis
         fig.add_trace(go.Scatter(
-            x             = series.index.strftime("%b '%y"),
+            x             = series.index.to_pydatetime(),
             y             = series.values.round(2),
             name          = comp,
             mode          = "lines+markers",
             line          = dict(color=colour, width=2.5),
             marker        = dict(size=7, color=colour, line=dict(width=1.5, color="#0f172a")),
-            hovertemplate = f"<b>{comp}</b><br>%{{x}}: %{{y:.2f}}<extra></extra>",
+            hovertemplate = f"<b>{comp}</b><br>%{{x|%b %Y}}: %{{y:.2f}}<extra></extra>",
         ))
     layout = base_layout(metric)
     layout["yaxis"]["tickformat"] = ".2f"
-    fig.update_layout(**layout, height=340)
+    # Put legend below chart so it never overlaps the title or lines
+    layout["legend"] = dict(
+        bgcolor="rgba(15,23,42,0.8)", bordercolor="#1e293b", borderwidth=1,
+        font=dict(size=10, color="#94a3b8"), orientation="h",
+        yanchor="top", y=-0.18, xanchor="left", x=0,
+    )
+    layout["margin"] = dict(l=8, r=8, t=44, b=80)
+    layout["xaxis"].update(
+        type="date",
+        tickformat="%b '%y",
+        dtick="M3",
+        ticklabelmode="instant",
+    )
+    fig.update_layout(**layout, height=380)
     return fig
 
 
