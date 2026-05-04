@@ -281,44 +281,59 @@ def make_line_chart(data: dict, metric: str, comp_list: list) -> go.Figure:
     return fig
 
 
-def make_radar(data: dict, metrics: list, quarter: pd.Timestamp, comp_list: list) -> go.Figure:
-    if len(metrics) < 3:
-        return None
-    fig = go.Figure()
-    for comp, df in data.items():
-        vals = []
-        for metric in metrics:
+def make_heatmap(data: dict, metrics: list, quarter: pd.Timestamp, comp_list: list) -> go.Figure:
+    """
+    Heatmap: rows = metrics, cols = companies.
+    Values are rank-normalised per metric (0=worst, 1=best) for colour,
+    but the actual value is shown as text so numbers stay readable.
+    """
+    comps   = list(data.keys())
+    z_vals  = []   # normalised 0-1 for colour
+    z_text  = []   # formatted actual values for labels
+
+    for metric in metrics:
+        row_vals = []
+        row_text = []
+        for comp, df in data.items():
             col = next((c for c in df.columns if pd.Timestamp(c) == quarter), None)
             v   = _get(df, metric, col) if col is not None else float("nan")
-            vals.append(float(v) if pd.notna(v) else 0.0)
+            row_vals.append(float(v) if pd.notna(v) else float("nan"))
+            row_text.append(f"{v:.2f}" if pd.notna(v) else "—")
 
-        # Normalise to 0-100 scale per metric for fair radar comparison
-        colour = company_color(comp, comp_list)
-        fig.add_trace(go.Scatterpolar(
-            r             = vals + [vals[0]],
-            theta         = metrics + [metrics[0]],
-            fill          = "toself",
-            name          = comp,
-            line          = dict(color=colour, width=2),
-            fillcolor     = colour + "22",
-            hovertemplate = f"<b>{comp}</b><br>%{{theta}}: %{{r:.2f}}<extra></extra>",
-        ))
+        # Normalise row to 0-1 (higher = greener)
+        valid = [v for v in row_vals if pd.notna(v)]
+        mn, mx = (min(valid), max(valid)) if len(valid) > 1 else (0, 1)
+        normed = [(v - mn) / (mx - mn) if pd.notna(v) and mx != mn else 0.5 for v in row_vals]
+        z_vals.append(normed)
+        z_text.append(row_text)
+
+    fig = go.Figure(go.Heatmap(
+        z           = z_vals,
+        x           = comps,
+        y           = metrics,
+        text        = z_text,
+        texttemplate= "%{text}",
+        textfont    = dict(size=11, color="#e2e8f0"),
+        colorscale  = [
+            [0.0,  "#7f1d1d"],   # deep red  — worst
+            [0.35, "#991b1b"],
+            [0.5,  "#1e293b"],   # neutral
+            [0.65, "#14532d"],
+            [1.0,  "#052e16"],   # deep green — best
+        ],
+        showscale   = False,
+        hovertemplate = "<b>%{x}</b><br>%{y}: %{text}<extra></extra>",
+    ))
     fig.update_layout(
         plot_bgcolor  = "rgba(0,0,0,0)",
         paper_bgcolor = "rgba(0,0,0,0)",
-        font          = dict(family="'DM Mono', monospace", color="#94a3b8", size=10),
-        polar         = dict(
-            bgcolor    = "rgba(15,23,42,0.6)",
-            radialaxis = dict(visible=True, gridcolor="#1e293b", linecolor="#334155",
-                              tickfont=dict(size=9, color="#64748b"), tickformat=".1f"),
-            angularaxis= dict(gridcolor="#1e293b", linecolor="#334155",
-                              tickfont=dict(size=10, color="#94a3b8")),
-        ),
-        legend        = dict(bgcolor="rgba(15,23,42,0.8)", bordercolor="#1e293b", borderwidth=1,
-                             font=dict(size=10, color="#94a3b8"), orientation="h",
-                             yanchor="bottom", y=1.05, xanchor="left", x=0),
-        margin        = dict(l=40, r=40, t=60, b=40),
-        height        = 420,
+        font          = dict(family="'DM Mono', monospace", color="#94a3b8", size=11),
+        xaxis         = dict(side="top", tickfont=dict(size=11, color="#cbd5e1"),
+                             linecolor="#1e293b", gridcolor="rgba(0,0,0,0)"),
+        yaxis         = dict(tickfont=dict(size=10, color="#94a3b8"), autorange="reversed",
+                             linecolor="#1e293b", gridcolor="rgba(0,0,0,0)"),
+        margin        = dict(l=8, r=8, t=40, b=8),
+        height        = max(260, len(metrics) * 48 + 60),
         hoverlabel    = dict(bgcolor="#0f172a", bordercolor="#334155", font=dict(size=11)),
     )
     return fig
@@ -360,7 +375,7 @@ def render_section(section_name, icon, metrics_df_map, all_metrics, selected_qua
         )
     with ctrl2:
         chart_type = st.radio(
-            "Chart", ["📊 Bar", "📈 Line", "🕸 Radar"],
+            "Chart", ["📊 Bar", "📈 Line", "🌡 Heatmap"],
             horizontal=True, key=f"{section_key}_chart_type",
             label_visibility="collapsed",
         )
@@ -401,14 +416,11 @@ def render_section(section_name, icon, metrics_df_map, all_metrics, selected_qua
                         fig = make_line_chart(metrics_df_map, metric, comp_list)
                         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    # ── Radar ─────────────────────────────────────────────────
+    # ── Heatmap ───────────────────────────────────────────────
     else:
-        if len(sel_metrics) < 3:
-            st.info("Select at least 3 metrics for a radar chart.")
-        else:
-            fig = make_radar(metrics_df_map, sel_metrics, selected_quarter, comp_list)
-            if fig:
-                st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        fig = make_heatmap(metrics_df_map, sel_metrics, selected_quarter, comp_list)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption("🟢 Green = relatively higher · 🔴 Red = relatively lower · colours are normalised per metric row")
 
     # ── Data table ────────────────────────────────────────────
     if show_table:
