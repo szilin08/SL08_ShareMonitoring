@@ -340,6 +340,46 @@ def make_heatmap(data: dict, metrics: list, quarter: pd.Timestamp, comp_list: li
 
 
 # ─────────────────────────────────────────────────────────────
+# METRIC & SECTION DESCRIPTIONS
+# ─────────────────────────────────────────────────────────────
+SECTION_DESCRIPTIONS = {
+    "Profitability": "Measures how efficiently a company generates profit from its revenue. Higher margins generally indicate better cost control and pricing power.",
+    "Liquidity":     "Measures a company's ability to meet its short-term obligations. Ratios above 1.0x indicate the company can cover current liabilities with current assets.",
+    "Returns":       "Measures how effectively management uses the company's assets and equity to generate profit. Higher is better.",
+    "Solvency":      "Measures the company's long-term financial stability and leverage. Lower ratios indicate less reliance on debt. Property developers typically carry higher leverage.",
+    "Valuation":     "Market-based multiples comparing the company's price to its fundamentals. Lower multiples may indicate undervaluation relative to peers.",
+}
+
+METRIC_DESCRIPTIONS = {
+    # Profitability
+    "Gross Margin (%)":        "Revenue minus cost of goods sold, as a % of revenue. Reflects core pricing power before operating costs.",
+    "Operating Margin (%)":    "Profit after operating expenses (but before interest & tax), as a % of revenue.",
+    "Pretax Margin (%)":       "Profit before tax as a % of revenue. Includes the impact of interest income/expense.",
+    "PAT Margin (%)":          "Profit after tax as a % of revenue. Shows net profitability after all expenses and taxes.",
+    "PATMI Margin (%)":        "Profit after tax attributable to minority interest, as a % of revenue. The 'cleanest' bottom-line measure for shareholders.",
+    "EBITDA Margin (%)":       "Earnings before interest, tax, depreciation & amortisation as a % of revenue. A proxy for operating cash generation.",
+    "Effective Tax Rate (%)":  "Actual tax paid as a % of pretax profit. Significant deviations from the statutory rate (24% in Malaysia) may warrant investigation.",
+    "Interest Coverage (x)":   "Interest expense divided by pretax income. Higher = more earnings available to service debt. <1x means earnings don't cover interest.",
+    # Liquidity
+    "Current Ratio (x)":       "Current assets ÷ current liabilities. Above 1.0x means the company can theoretically cover all short-term debts with short-term assets.",
+    "Quick Ratio (x)":         "Like Current Ratio but excludes inventory (harder to liquidate quickly). More conservative. Property developers often have low quick ratios due to large inventory.",
+    # Returns
+    "Return on Equity (%)":    "Net income ÷ total equity. How much profit is generated for every RM of shareholders' equity. Higher = better use of equity.",
+    "Return on Assets (%)":    "Net income ÷ total assets. How efficiently the company uses all its assets to generate profit.",
+    # Solvency
+    "Debt / Equity (Owners) (x)":     "Total debt ÷ equity attributable to owners (excluding minority interest). Core leverage ratio for shareholders.",
+    "Debt / Total Equity (x)":         "Total debt ÷ total equity (including minority interest). Broader leverage measure.",
+    "Net Debt / Equity (Owners) (x)": "Net debt (debt minus cash) ÷ owners' equity. Accounts for cash on hand. Negative = net cash position.",
+    "Net Debt / Total Equity (x)":     "Net debt ÷ total equity including minorities. Preferred by analysts for capital structure analysis.",
+    # Valuation
+    "Enterprise Multiple (x)": "Enterprise Value (market cap + debt - cash) ÷ EBITDA. Useful for comparing companies with different capital structures.",
+    "P/E Ratio (x)":            "Share price ÷ earnings per share (trailing). How much investors pay per RM of earnings. Lower may indicate undervaluation.",
+    "Price / Book (x)":         "Market cap ÷ book value of equity. Compares market price to accounting value. <1x may indicate undervaluation.",
+    "Price / Revenue (x)":      "Market cap ÷ total revenue. Useful when earnings are volatile. Lower = cheaper relative to sales.",
+    "Price / Cashflow (x)":     "Market cap ÷ operating cash flow. Often more reliable than P/E as cash flow is harder to manipulate.",
+}
+
+# ─────────────────────────────────────────────────────────────
 # SECTION RENDERER
 # ─────────────────────────────────────────────────────────────
 SECTION_COLORS = {
@@ -353,13 +393,17 @@ SECTION_COLORS = {
 def render_section(section_name, icon, metrics_df_map, all_metrics, selected_quarter, comp_list, section_key):
     accent = SECTION_COLORS.get(section_name, "#58a6ff")
 
-    # Header bar
+    # Header bar + section description
+    section_desc = SECTION_DESCRIPTIONS.get(section_name, "")
     st.markdown(
-        f"""<div style='display:flex;align-items:center;gap:10px;margin-bottom:16px;
+        f"""<div style='margin-bottom:12px;
             padding:12px 16px;background:linear-gradient(90deg,rgba(15,23,42,0.9) 0%,rgba(15,23,42,0.4) 100%);
             border-left:3px solid {accent};border-radius:4px;'>
-            <span style='font-size:18px'>{icon}</span>
-            <span style='font-size:15px;font-weight:600;color:#e2e8f0;letter-spacing:0.02em'>{section_name}</span>
+            <div style='display:flex;align-items:center;gap:10px;margin-bottom:6px;'>
+                <span style='font-size:18px'>{icon}</span>
+                <span style='font-size:15px;font-weight:600;color:#e2e8f0;letter-spacing:0.02em'>{section_name}</span>
+            </div>
+            <div style='font-size:12px;color:#64748b;line-height:1.5'>{section_desc}</div>
         </div>""",
         unsafe_allow_html=True,
     )
@@ -385,6 +429,22 @@ def render_section(section_name, icon, metrics_df_map, all_metrics, selected_qua
     if not sel_metrics:
         st.caption("Select at least one metric.")
         return
+
+    # Per-metric description pills
+    desc_html = ""
+    for m in sel_metrics:
+        d = METRIC_DESCRIPTIONS.get(m, "")
+        if d:
+            desc_html += (
+                f"<div style='margin-bottom:6px;padding:7px 12px;"
+                f"background:rgba(15,23,42,0.7);border:1px solid #1e293b;border-radius:6px;"
+                f"font-size:11px;color:#94a3b8;line-height:1.5;'>"
+                f"<span style='color:#cbd5e1;font-weight:600;'>{m}</span>"
+                f"<span style='color:#475569;margin:0 6px;'>—</span>{d}</div>"
+            )
+    if desc_html:
+        with st.expander("📖 Metric definitions", expanded=False):
+            st.markdown(desc_html, unsafe_allow_html=True)
 
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
