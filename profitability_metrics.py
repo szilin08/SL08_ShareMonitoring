@@ -8,6 +8,29 @@ from plotly.subplots import make_subplots
 from financials import companies, fetch_quarterly_financials
 
 # ─────────────────────────────────────────────────────────────
+# CACHED DATA FETCHERS
+# ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_ticker_info(ticker_code: str) -> dict:
+    try:
+        return yf.Ticker(ticker_code).info or {}
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_quarterly_cashflow(ticker_code: str) -> pd.DataFrame:
+    try:
+        df = yf.Ticker(ticker_code).quarterly_cashflow
+        if df is None or df.empty:
+            return pd.DataFrame()
+        df.columns = pd.to_datetime(df.columns, errors="coerce")
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+# ─────────────────────────────────────────────────────────────
 # CHART THEME
 # ─────────────────────────────────────────────────────────────
 CHART_THEME = dict(
@@ -128,7 +151,7 @@ def calc_solvency(bs: pd.DataFrame) -> pd.DataFrame:
     return out.apply(pd.to_numeric, errors="coerce")
 
 
-def calc_valuation(df: pd.DataFrame, bs: pd.DataFrame, ticker) -> pd.DataFrame:
+def calc_valuation(df: pd.DataFrame, bs: pd.DataFrame, ticker_code: str) -> pd.DataFrame:
     rows = [
         "Enterprise Multiple (x)",
         "P/E Ratio (x)",
@@ -137,8 +160,8 @@ def calc_valuation(df: pd.DataFrame, bs: pd.DataFrame, ticker) -> pd.DataFrame:
         "Price / Cashflow (x)",
     ]
     out    = pd.DataFrame(index=rows, columns=df.columns, dtype=float)
-    info   = ticker.info
-    cf_raw = ticker.quarterly_cashflow
+    info   = fetch_ticker_info(ticker_code)
+    cf_raw = fetch_quarterly_cashflow(ticker_code)
     mc     = info.get("marketCap", None)
     pe     = info.get("trailingPE", None)
 
@@ -426,7 +449,7 @@ def main():
     # ── load all data ─────────────────────────────────────────
     fin_data  = {}   # comp → quarterly financials df
     bs_data   = {}   # comp → quarterly balance sheet df
-    tick_objs = {}   # comp → yf.Ticker
+    tk_codes  = {}   # comp → ticker code string
 
     with st.spinner(f"Fetching data for {len(selected_companies)} companies…"):
         for comp in selected_companies:
@@ -434,8 +457,7 @@ def main():
             if not tk_code:
                 continue
             df_fin = fetch_quarterly_financials(tk_code)
-            ticker = yf.Ticker(tk_code)
-            bs_raw = ticker.quarterly_balance_sheet
+            bs_raw = yf.Ticker(tk_code).quarterly_balance_sheet
             if df_fin.empty or bs_raw is None or bs_raw.empty:
                 st.warning(f"Incomplete data for {comp}, skipping.")
                 continue
@@ -443,9 +465,9 @@ def main():
                 bs_raw.columns = pd.to_datetime(bs_raw.columns)
             except Exception:
                 pass
-            fin_data[comp]  = df_fin
-            bs_data[comp]   = bs_raw
-            tick_objs[comp] = ticker
+            fin_data[comp] = df_fin
+            bs_data[comp]  = bs_raw
+            tk_codes[comp] = tk_code
 
     if not fin_data:
         st.error("No data could be loaded.")
@@ -458,7 +480,7 @@ def main():
     liq_map   = {c: calc_liquidity(bs_data[c])      for c in comp_list}
     ret_map   = {c: calc_return(fin_data[c], bs_data[c]) for c in comp_list}
     solv_map  = {c: calc_solvency(bs_data[c])        for c in comp_list}
-    val_map   = {c: calc_valuation(fin_data[c], bs_data[c], tick_objs[c]) for c in comp_list}
+    val_map   = {c: calc_valuation(fin_data[c], bs_data[c], tk_codes[c]) for c in comp_list}
 
     # ── colour legend ─────────────────────────────────────────
     legend_html = " &nbsp; ".join(
